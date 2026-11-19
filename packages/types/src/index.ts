@@ -30,4 +30,11 @@ export type {
   WebhookPayload,
   WebhookDeliveryResult,
   WebhookDeliveryLogEntry,
+  WebhookEventDataMap,
+  WalletCreatedEventData,
+  TransactionCosignedEventData,
+  TransactionSponsoredEventData,
+  TransactionFeeBumpSubmittedEventData,
+  PolicyViolatedEventData,
+  BalanceLowEventData,
 } from "./webhook.js";

@@ -108,6 +108,15 @@ export type {
   UseNetworkHealthResult,
 } from "./use-network-health.js";
 
+// #591 — Fee estimation with polling and surge indicator
+export { useFeeEstimate } from "./use-fee-estimate.js";
+export type {
+  FeeEstimate,
+  FeeEstimateStats,
+  UseFeeEstimateOptions,
+  UseFeeEstimateResult,
+} from "./use-fee-estimate.js";
+
 // #281 — i18n framework
 export { useTranslation, resolveTranslations, translations } from "./i18n/index.js";
 export type { LumenLocale, LumenTranslations, LumenI18nContextValue } from "./i18n/index.js";

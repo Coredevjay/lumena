@@ -10,7 +10,11 @@ ROOT_DIR     := $(abspath ..)
 RELEASE_DIR  := $(ROOT_DIR)/target/$(WASM_TARGET)/release
 OPTIMIZED_DIR := $(ROOT_DIR)/target/optimized
 
-.PHONY: all build optimize test clean
+BENCHMARKS_DIR := $(abspath benchmarks)
+BENCH_RESULTS  := $(BENCHMARKS_DIR)/benchmark-results.json
+BENCH_BASELINE := $(BENCHMARKS_DIR)/benchmark-baseline.json
+
+.PHONY: all build optimize test clean benchmark-baseline update-baseline
 
 all: optimize
 
@@ -29,6 +33,17 @@ optimize: build
 
 test:
 	cargo test --manifest-path $(ROOT_DIR)/Cargo.toml
+
+# Refresh the committed gas-regression baseline from a fresh benchmark run.
+# See contracts/benchmarks/README.md for details.
+benchmark-baseline:
+	@echo "Running benchmarks to refresh baseline..."
+	cargo run --manifest-path $(ROOT_DIR)/Cargo.toml --release --bin benchmarks
+	@test -f $(BENCH_RESULTS) || { echo "error: $(BENCH_RESULTS) not found"; exit 1; }
+	@cp $(BENCH_RESULTS) $(BENCH_BASELINE)
+	@echo "Baseline updated: $(BENCH_BASELINE)"
+
+update-baseline: benchmark-baseline
 
 clean:
 	cargo clean --manifest-path $(ROOT_DIR)/Cargo.toml

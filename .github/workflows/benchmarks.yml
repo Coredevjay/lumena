@@ -53,6 +53,30 @@ jobs:
           cargo run --package benchmarks --bin benchmarks 2>&1 | tee benchmark-output.txt
           echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
 
+      - name: Compare against committed gas baseline
+        id: baseline
+        if: always()
+        env:
+          REGRESSION_THRESHOLD_PCT: ${{ vars.REGRESSION_THRESHOLD_PCT || '10' }}
+        run: |
+          node contracts/benchmarks/compare-baseline.mjs \
+            --results benchmark-results.json \
+            --baseline contracts/benchmarks/baseline.json \
+            --threshold "${REGRESSION_THRESHOLD_PCT}" \
+            --summary baseline-summary.md \
+            --json baseline-comparison.json
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Upload baseline comparison artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: baseline-comparison
+          path: |
+            baseline-summary.md
+            baseline-comparison.json
+          retention-days: 90
+
       - name: Upload benchmark results (JSON)
         uses: actions/upload-artifact@v4
         if: always()
@@ -77,6 +101,13 @@ jobs:
             const fs = require('fs');
 
             let body = '## ⚡ Soroban Resource Footprint Report\n\n';
+
+            // Baseline regression comparison (produced by compare-baseline.mjs)
+            if (fs.existsSync('baseline-summary.md')) {
+              body += fs.readFileSync('baseline-summary.md', 'utf8') + '\n\n';
+            } else {
+              body += '> ⚠️ Baseline comparison summary not available.\n\n';
+            }
 
             try {
               const data = JSON.parse(fs.readFileSync('benchmark-results.json', 'utf8'));
@@ -134,4 +165,10 @@ jobs:
         if: steps.bench.outputs.exit_code != '0'
         run: |
           echo "::error::One or more Soroban benchmarks exceeded their resource budget thresholds."
+          exit 1
+
+      - name: Fail if any benchmark regressed against baseline
+        if: steps.baseline.outputs.exit_code != '0'
+        run: |
+          echo "::error::One or more Soroban benchmarks regressed against the committed baseline (see baseline-summary.md)."
           exit 1

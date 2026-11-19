@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { Horizon, TransactionBuilder } from "@stellar/stellar-sdk";
 import fs from "node:fs";
 import { createInitCommand } from "./commands/init";
+import { createWalletCommand } from "./commands/wallet";
 
 const program = new Command();
 
@@ -399,6 +400,14 @@ walletCmd
       process.exit(1);
     }
   });
+
+walletCmd.addCommand(
+  createWalletCommand({
+    isJsonOutput,
+    promptHidden,
+    validateStrongPassword,
+  }),
+);
 
 function promptHidden(question: string): Promise<string> {
   return new Promise((resolve, reject) => {

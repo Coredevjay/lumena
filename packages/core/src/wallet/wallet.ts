@@ -5,6 +5,7 @@ import { createSponsoredAccount } from "../stellar/account.js";
 import { setupMultisig } from "../stellar/multisig.js";
 import { KeyManager } from "../keys/manager.js";
 import { ContractClient } from "../soroban/client.js";
+import { parseResultCodes, StellarResultError } from "../stellar/result-codes.js";
 import type { ContractSimulationResult, OperationSpec, ScValInput } from "@lumen/types";
 
 export interface WalletOpts {
@@ -236,6 +237,8 @@ export class Wallet {
     });
     if (!submitResponse.ok) {
       const details = await submitResponse.text();
+      const resultError = this.toStellarResultError(details);
+      if (resultError) throw resultError;
       throw new Error(
         `Fee-bump submission failed with status ${submitResponse.status}${details ? `: ${details}` : ""}`,
       );
@@ -567,6 +570,35 @@ export class Wallet {
       throw new Error("Unable to read inheritance status from contract");
     }
     return parsed;
+  }
+
+  /**
+   * Converts a fee-bump error response body into a typed `StellarResultError`
+   * when it carries a result code, either as the server error envelope
+   * (`{ error, code, operationIndex, hint }`) or as raw Horizon result codes.
+   */
+  private toStellarResultError(details: string): StellarResultError | null {
+    let body: unknown;
+    try {
+      body = JSON.parse(details);
+    } catch {
+      return null;
+    }
+    if (typeof body !== "object" || body === null) return null;
+
+    const envelope = body as Record<string, unknown>;
+    if (typeof envelope.code === "string" && typeof envelope.hint === "string") {
+      return new StellarResultError({
+        code: envelope.code,
+        operationIndex:
+          typeof envelope.operationIndex === "number" ? envelope.operationIndex : null,
+        message: typeof envelope.error === "string" ? envelope.error : envelope.code,
+        hint: envelope.hint,
+      });
+    }
+
+    const parsed = parseResultCodes(body);
+    return parsed ? new StellarResultError(parsed) : null;
   }
 
   private isTruthySimulationResult(simulation: ContractSimulationResult): boolean {

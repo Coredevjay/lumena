@@ -9,6 +9,7 @@ import {
 } from "@stellar/stellar-sdk";
 import type { StellarClient } from "../stellar/client.js";
 import { Wallet } from "../wallet/wallet.js";
+import { StellarResultError } from "../stellar/result-codes.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -82,6 +83,38 @@ describe("Wallet.send", () => {
       "A Lumen server URL is required",
     );
     expect(submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it("throws a StellarResultError when fee-bump submission returns a result code", async () => {
+    const { wallet } = createWallet("https://lumen.example/");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ signedXdr: "cosigned-xdr" }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: "The source account does not have enough funds.",
+            code: "op_underfunded",
+            operationIndex: 0,
+            hint: "Fund the account or reduce the amount.",
+          }),
+          { status: 400 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const error = await wallet
+      .send(Keypair.random().publicKey(), Asset.native(), "1")
+      .catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(StellarResultError);
+    expect(error).toMatchObject({
+      code: "op_underfunded",
+      operationIndex: 0,
+      message: "The source account does not have enough funds.",
+    });
   });
 
   it("forwards the memo to buildPaymentTransaction", async () => {

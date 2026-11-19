@@ -14,6 +14,12 @@ export {
   type BuildFeeBumpOpts,
   type BuildTransactionOpts,
 } from "./stellar/transaction.js";
+export {
+  parseResultCodes,
+  StellarResultError,
+  RESULT_CODE_MESSAGES,
+  type ParsedResultCode,
+} from "./stellar/result-codes.js";
 export { pathPayment, pathPaymentStrictReceive, findPaths } from "./stellar/path-payment.js";
 export { KNOWN_ASSETS, getAsset, getNativeAsset } from "./stellar/assets.js";
 export {

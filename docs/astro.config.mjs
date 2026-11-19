@@ -54,6 +54,7 @@ export default defineConfig({
             { label: 'Contributing', slug: 'contributing' },
             { label: 'CI', slug: 'ci' },
             { label: 'Security', slug: 'security' },
+            { label: 'Troubleshooting', slug: 'troubleshooting' },
           ],
         },
         {

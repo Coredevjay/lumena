@@ -160,3 +160,10 @@ export {
   type UrFrame,
   type AirgapOptions,
 } from "./stellar/airgap.js";
+export {
+  describeOperation,
+  type DescribeOperationOpts,
+  type HorizonOperationRecord,
+  type OperationDescription,
+  type OperationDirection,
+} from "./stellar/operation-history.js";

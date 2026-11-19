@@ -285,6 +285,12 @@ Running `pnpm check` locally ensures your PR will pass our continuous integratio
 
 We enforce the [Conventional Commits](https://www.conventionalcommits.org/) specification for all commits.
 
+> **Enforced automatically**: Commit messages are validated by [commitlint](https://commitlint.js.org/) via the Husky `commit-msg` hook (`.husky/commit-msg`). Commits that do not match the format below are rejected locally. To validate a message manually, run:
+>
+> ```bash
+> pnpm commitlint
+> ```
+
 ### Format
 
 ```text
@@ -308,6 +314,25 @@ We enforce the [Conventional Commits](https://www.conventionalcommits.org/) spec
 - **`ci`**: Changes to CI configuration files and scripts (GitHub Actions).
 - **`chore`**: Maintenance tasks, tooling updates, or miscellaneous tasks.
 
+The types listed above are the **only allowed values**; commitlint will reject any other type.
+
+### Scopes
+
+When a scope is provided, it must be one of the following allowed values:
+
+- **`core`**: `@lumen/core` package.
+- **`server`**: `@lumen/server` package.
+- **`web-sdk`**: `@lumen/web-sdk` package.
+- **`react`**: `@lumen/react` package.
+- **`cli`**: `@lumen/cli` package.
+- **`types`**: Shared type definitions.
+- **`docs`**: Documentation.
+- **`ci`**: CI configuration and workflows.
+- **`deps`**: Dependency updates.
+- **`release`**: Release and versioning changes.
+
+The scope is optional, but if present it must match one of the values above.
+
 ### Examples
 
 ```text
@@ -322,6 +347,28 @@ Closes #112
 
 ```text
 docs(web-sdk): add pagination examples for getTransactions query
+```
+
+### PR Title Conventions
+
+Pull request titles must follow the same `<type>(<scope>): <summary>` format as commit messages. PR titles are validated by the `pr-title` GitHub Action (`.github/workflows/pr-title.yml`), which runs on every pull request and **fails the check if the title does not conform**. Since PRs are squash-merged, the PR title becomes the final commit message on `main`.
+
+**Valid titles:**
+
+```text
+feat(core): add soroban event filter by topic wildcard
+fix(server): resolve race condition in block polling loop
+docs: update contributing guide
+ci(deps): bump actions/checkout to v4
+```
+
+**Invalid titles (will fail the check):**
+
+```text
+Add new feature                  # missing type and scope
+feature(core): add filter        # "feature" is not an allowed type
+feat(unknown): add filter        # "unknown" is not an allowed scope
+feat(core) add filter            # missing colon
 ```
 
 ---

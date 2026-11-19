@@ -101,6 +101,20 @@ export {
   type Sep30IdentityType,
 } from "./stellar/sep30.js";
 export {
+  buildPayUri,
+  parsePayUri,
+  type PayUriParams,
+  type PayUriMemoType,
+} from "./stellar/sep7.js";
+export {
+  resolveFederation,
+  resolveDestination,
+  isFederationAddress,
+  clearFederationCache,
+  type FederationRecord,
+  type ResolveFederationOpts,
+} from "./stellar/federation.js";
+export {
   encodeMuxedAddress,
   decodeMuxedAddress,
   resolveBasePublicKey,

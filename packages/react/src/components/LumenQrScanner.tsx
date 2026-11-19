@@ -8,6 +8,7 @@ import React, {
   useState,
 } from 'react';
 import { StrKey } from '@stellar/stellar-sdk';
+import { parsePayUri } from '@lumen/core';
 
 /**
  * Result of a successful QR scan.
@@ -107,40 +108,30 @@ export function parseQrPayload(raw: string): LumenQrScanResult {
   const sep0007Prefix = 'web+stellar:';
   if (trimmed.toLowerCase().startsWith(sep0007Prefix)) {
     const rest = trimmed.slice(sep0007Prefix.length);
-    const [operation, queryString = ''] = rest.split('?');
+    const [operation] = rest.split('?');
     if (operation.toLowerCase() !== 'pay') {
       throw new Error(`Unsupported SEP-0007 operation: ${operation}`);
     }
 
-    const params = new URLSearchParams(queryString);
-    const destination = params.get('destination');
-    if (!destination || !StrKey.isValidEd25519PublicKey(destination)) {
-      throw new Error('SEP-0007 URI is missing a valid destination');
-    }
+    const params = parsePayUri(trimmed);
 
     const result: LumenQrScanResult = {
       raw: trimmed,
       type: 'sep0007',
-      destination,
+      destination: params.destination,
     };
 
-    const amount = params.get('amount');
-    if (amount) result.amount = amount;
+    if (params.amount) result.amount = params.amount;
 
-    const memo = params.get('memo');
-    if (memo) result.memo = memo;
+    if (params.memo) result.memo = params.memo;
 
-    const memoType = params.get('memo_type');
-    if (memoType) result.memoType = memoType;
+    if (params.memoType) result.memoType = params.memoType;
 
-    const assetCode = params.get('asset_code');
-    const assetIssuer = params.get('asset_issuer');
-    if (assetCode) {
-      result.asset = assetIssuer ? `${assetCode}:${assetIssuer}` : assetCode;
+    if (params.assetCode && params.assetIssuer) {
+      result.asset = `${params.assetCode}:${params.assetIssuer}`;
     }
 
-    const network = params.get('network_passphrase');
-    if (network) result.network = network;
+    if (params.networkPassphrase) result.network = params.networkPassphrase;
 
     return result;
   }

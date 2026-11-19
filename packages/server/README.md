@@ -82,6 +82,40 @@ pnpm --filter @lumen/server lint
 pnpm --filter @lumen/server clean
 ```
 
+### Load Smoke Test
+
+Every pull request runs a short [k6](https://k6.io/docs/get-started/installation/) smoke load (`load-smoke` job in `.github/workflows/ci.yml`) against a locally started server, using `__tests__/load/smoke.js`. Run it locally against a running server with:
+
+```bash
+pnpm --filter @lumen/server test:load:smoke
+```
+
+The run sends a constant 20 iterations per second for 30 seconds, each hitting `/health` and `/cosign`, and fails when any threshold is breached:
+
+| Metric | Threshold |
+|--------|-----------|
+| `/cosign` p95 latency | < 150 ms |
+| `/health` p95 latency | < 150 ms |
+| Error rate (5xx responses, timeouts, connection errors) | < 1% |
+
+The smoke payloads are not signed transactions, so `/cosign` answers with a 4xx rejection; these count as handled responses, not errors. Override the defaults with the `BASE_URL`, `RATE`, `DURATION`, `P95_THRESHOLD_MS` and `MAX_ERROR_RATE` environment variables. The full benchmark (`__tests__/load/benchmark.js`) is unchanged.
+
+### Mutation Testing
+
+The policy engine (`src/policy/`) is mutation-tested with [Stryker](https://stryker-mutator.io/) to check that the tests catch real regressions, not just execute lines. Configuration lives in `stryker.config.json`.
+
+```bash
+pnpm --filter @lumen/server test:mutation
+```
+
+| Threshold | Mutation score |
+|-----------|----------------|
+| `high` | 80% |
+| `low` | 70% |
+| `break` | 60% (the run fails below this) |
+
+The HTML and JSON reports are written to `reports/mutation/`. The `Mutation Testing` workflow runs on pull requests that touch `packages/server/src/policy/` and on demand, uploads the report, and records the score in the job summary; the baseline is the score of its first run on `main`.
+
 ---
 
 ## API Endpoints

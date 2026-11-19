@@ -3,28 +3,32 @@
   "version": "0.1.0",
   "type": "module",
   "sideEffects": false,
-  "main": "dist/index.js",
-  "module": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
       "default": "./dist/index.js"
     },
     "./stellar": {
       "types": "./dist/stellar/index.d.ts",
       "import": "./dist/stellar/index.js",
+      "require": "./dist/stellar/index.cjs",
       "default": "./dist/stellar/index.js"
     },
     "./telemetry": {
       "types": "./dist/telemetry/index.d.ts",
       "import": "./dist/telemetry/index.js",
+      "require": "./dist/telemetry/index.cjs",
       "default": "./dist/telemetry/index.js"
     },
     "./crypto": {
       "types": "./dist/crypto/zk.d.ts",
       "import": "./dist/crypto/zk.js",
+      "require": "./dist/crypto/zk.cjs",
       "default": "./dist/crypto/zk.js"
     },
     "./package.json": "./package.json"
@@ -33,14 +37,19 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsup",
+    "build:types": "tsc -p tsconfig.build.json --emitDeclarationOnly",
     "clean": "rm -rf dist",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:fuzz": "vitest run __tests__/fuzz",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:cjs": "node scripts/smoke-cjs.cjs",
+    "validate:publint": "publint",
+    "validate:attw": "attw --pack .",
+    "validate:package": "pnpm run validate:publint && pnpm run validate:attw"
   },
   "dependencies": {
     "@lumen/types": "workspace:*",
@@ -67,9 +76,12 @@
   "devDependencies": {
     "@noble/curves": "^1.8.0",
     "@stellar/stellar-sdk": "^17.0.1",
+    "@arethetypeswrong/cli": "^0.17.0",
     "@vitest/coverage-v8": "^5.0.0",
     "fast-check": "^3.23.0",
+    "publint": "^0.3.0",
     "snarkjs": "^0.7.5",
+    "tsup": "^8.3.0",
     "typescript": "^5.8.0",
     "vitest": "^5.0.0"
   }

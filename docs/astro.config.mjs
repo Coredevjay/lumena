@@ -89,7 +89,13 @@ export default defineConfig({
           label: 'API Reference',
           items: [
             { label: 'Overview', slug: 'api' },
-            { label: 'API Reference (TypeDoc)', autogenerate: { directory: 'api' } },
+            {
+              label: 'TypeDoc Reference',
+              // TypeDoc output is generated into src/content/docs/api/typedoc
+              // by `npm run docs:typedoc` (see typedoc.json) and is picked up
+              // here via autogeneration.
+              autogenerate: { directory: 'api/typedoc' },
+            },
           ],
         },
         {

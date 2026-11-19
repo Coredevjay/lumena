@@ -2,35 +2,47 @@
   "name": "@lumen/react",
   "version": "0.1.0",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "react-server": "./dist/server.js",
+      "react-server": {
+        "import": "./dist/server.js",
+        "require": "./dist/server.cjs"
+      },
       "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
       "default": "./dist/index.js"
     },
     "./server": {
       "types": "./dist/server.d.ts",
-      "react-server": "./dist/server.js",
+      "react-server": {
+        "import": "./dist/server.js",
+        "require": "./dist/server.cjs"
+      },
       "import": "./dist/server.js",
+      "require": "./dist/server.cjs",
       "default": "./dist/server.js"
     },
     "./theme.css": "./dist/theme/theme.css",
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "tsc && node scripts/copy-assets.mjs",
+    "build": "tsup && node scripts/copy-assets.mjs",
     "clean": "rm -rf dist",
-    "dev": "tsc --watch",
+    "dev": "tsup --watch",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "validate:package": "publint && attw --pack .",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build"
   },
+=======
   "dependencies": {
     "@lumen/core": "workspace:*",
     "@lumen/web-sdk": "workspace:*",
@@ -49,14 +61,17 @@
     "@storybook/test": "^8.6.0",
     "@testing-library/jest-dom": "^6.6.0",
     "@testing-library/react": "^16.0.0",
+    "@arethetypeswrong/cli": "^0.17.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitest/coverage-v8": "^5.0.0",
     "axe-core": "^4.10.0",
     "jsdom": "^30.0.1",
+    "publint": "^0.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "storybook": "^8.6.0",
+    "tsup": "^8.3.0",
     "typescript": "^5.8.0",
     "vite": "^6.0.0",
     "vitest": "^5.0.0"

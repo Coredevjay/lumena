@@ -1,4 +1,5 @@
 import { Buffer } from 'buffer';
+import { crypto } from './adapter';
 
 /**
  * Zero-Knowledge Proof (zk-SNARK) verification engine for anonymous policy compliance.
@@ -187,7 +188,7 @@ export function encodeProofForMemo(
   const json = JSON.stringify(payload);
   const encoded = Buffer.from(json, 'utf8').toString('base64');
 
-  const byteLength = Buffer.byteLength(encoded, 'utf8');
+  const byteLength = crypto.encodeUtf8(encoded).length;
   if (byteLength > MEMO_MAX_BYTES) {
     throw new Error(
       `encodeProofForMemo: encoded proof is ${byteLength} bytes, exceeds memo limit of ${MEMO_MAX_BYTES} bytes`
@@ -238,7 +239,7 @@ function toBytes(value: string): Uint8Array {
     throw new Error('toBytes: value must be a string');
   }
   // SnarkJS field elements are decimal strings; encode them as UTF-8 bytes.
-  return new Uint8Array(Buffer.from(value, 'utf8'));
+  return crypto.encodeUtf8(value);
 }
 
 /**

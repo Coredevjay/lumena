@@ -2,15 +2,35 @@
   "name": "@lumen/server",
   "version": "0.1.0",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsup",
     "clean": "rm -rf dist",
     "dev": "node --watch dist/main.js",
     "start": "node dist/main.js",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
+    "validate:package": "publint && attw --pack .",
+    "test:require": "node -e \"require('./dist/index.cjs')\"",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:mutation": "stryker run",
@@ -70,8 +90,11 @@
     "@vitest/coverage-v8": "^5.0.0",
     "fast-check": "^3.23.1",
     "prisma": "^6.2.1",
+    "tsup": "^8.3.5",
     "typescript": "^5.8.0",
     "vitest": "^5.0.0",
+    "@arethetypeswrong/cli": "^0.17.4",
+    "publint": "^0.3.2",
     "@testing-library/react": "^16.3.3"
   },
   "k6": {

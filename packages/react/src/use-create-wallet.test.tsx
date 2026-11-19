@@ -11,6 +11,38 @@ describe("useCreateWallet", () => {
     );
   }
 
+  it("only re-renders when its own state changes", async () => {
+    const createdWallet = { address: "GADDRESS", id: "GADDRESS" };
+    const createWallet = vi.fn().mockResolvedValue(createdWallet);
+    const renderSpy = vi.fn();
+    const { result } = renderHook(
+      () => {
+        renderSpy();
+        return useCreateWallet();
+      },
+      { wrapper: wrapperFor({ createWallet }) },
+    );
+
+    const initialRenders = renderSpy.mock.calls.length;
+
+    await act(async () => {
+      await result.current.createWallet();
+    });
+
+    const rendersAfterCreate = renderSpy.mock.calls.length;
+    expect(rendersAfterCreate).toBeGreaterThan(initialRenders);
+
+    // Resetting when there is nothing to reset should not trigger a re-render.
+    act(() => result.current.reset());
+    expect(renderSpy.mock.calls.length).toBe(rendersAfterCreate);
+
+    // A subsequent create with the same result should still re-render.
+    await act(async () => {
+      await result.current.createWallet();
+    });
+    expect(renderSpy.mock.calls.length).toBeGreaterThan(rendersAfterCreate);
+  });
+
   it("creates a wallet and stores the result", async () => {
     const createdWallet = { address: "GADDRESS", id: "GADDRESS" };
     const createWallet = vi.fn().mockResolvedValue(createdWallet);

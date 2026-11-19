@@ -159,4 +159,60 @@ describe("useGaslessTransaction", () => {
 
     expect(result.current.error?.message).toBe("policy rejected");
   });
+
+  it("only re-renders consumers when relevant state changes", async () => {
+    const sendPayment = vi.fn().mockResolvedValue({ hash: "tx-1" });
+    const getBalance = vi.fn().mockResolvedValue("100.0000000");
+
+    const client = {
+      sendPayment,
+      getBalance,
+    } as unknown as LumenClient;
+
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <LumenProvider client={client}>{children}</LumenProvider>
+    );
+
+    let renderCount = 0;
+    const { result } = renderHook(
+      () => {
+        renderCount += 1;
+        return useGaslessTransaction("wallet-1");
+      },
+      { wrapper },
+    );
+
+    // Wait for the confirmed balance to be loaded.
+    await waitFor(() => {
+      expect(result.current.balance).toBe("100.0000000");
+    });
+
+    // Record the render count once the initial load has settled.
+    const settledRenderCount = renderCount;
+
+    // An optimistic update followed by success should re-render the consumer,
+    // but the number of renders must stay bounded (no render storm from
+    // unrelated provider state changes).
+    await act(async () => {
+      await result.current.execute({ destination: "dest-1", amount: "10.0000000" });
+    });
+
+    await waitFor(() => {
+      expect(result.current.balance).toBe("100.0000000");
+    });
+
+    const rendersDuringExecute = renderCount - settledRenderCount;
+    expect(rendersDuringExecute).toBeGreaterThan(0);
+    // Optimistic apply + clear (plus at most a couple of settling renders).
+    expect(rendersDuringExecute).toBeLessThanOrEqual(4);
+
+    // Re-rendering the provider with the same client must not cause the
+    // consumer to re-render, since the client context is stable.
+    const stableRenderCount = renderCount;
+    await act(async () => {
+      // No state change: awaiting a microtask flush should not trigger renders.
+      await Promise.resolve();
+    });
+    expect(renderCount).toBe(stableRenderCount);
+  });
 });

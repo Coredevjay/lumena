@@ -7,6 +7,7 @@ import {
   getAssetFlags,
   getAssetFlagWarnings,
   setupMultisig,
+  crypto,
   type AssetFlags,
   type PasskeyRegistrationOpts,
 } from "@lumen/core";
@@ -53,7 +54,7 @@ export interface KeypairWalletResult {
 
 export function createSessionKey(durationSeconds: number = 3600): SessionKeyInfo {
   const keypair = Keypair.random();
-  const expiresAt = Date.now() + durationSeconds * 1000;
+  const expiresAt = crypto.now() + durationSeconds * 1000;
   return {
     keypair,
     publicKey: keypair.publicKey(),
@@ -185,7 +186,7 @@ export class LumenClient {
 
   async createWalletWithPasskey(opts?: PasskeyRegistrationOpts): Promise<PasskeyWalletResult> {
     const passkeyManager = new PasskeyManager();
-    const username = opts?.username ?? `user-${Date.now()}`;
+    const username = opts?.username ?? `user-${crypto.now()}`;
     const { credentialId, keypair } = await passkeyManager.registerPasskey({
       username,
       rpName: opts?.rpName,

@@ -27,26 +27,84 @@ export interface Signer {
   sign(payload: Uint8Array): Promise<Uint8Array>;
 }
 
+/**
+ * Configuration for {@link Signer} implementations backed by Google Cloud KMS.
+ *
+ * Either supply the individual components (`projectId`, `locationId`,
+ * `keyRingId`, `keyId`, `keyVersion`) or the fully-qualified
+ * `keyResourceName`; the latter takes precedence when both are provided.
+ *
+ * @example
+ * ```ts
+ * const config: GcpKmsSignerConfig = {
+ *   projectId: 'my-project',
+ *   locationId: 'global',
+ *   keyRingId: 'stellar',
+ *   keyId: 'cosigner',
+ *   keyVersion: '1',
+ * };
+ * ```
+ */
 export interface GcpKmsSignerConfig {
+  /** GCP project ID that owns the key ring. */
   projectId?: string;
+  /** GCP location of the key ring, e.g. `global` or `europe-west1`. */
   locationId?: string;
+  /** Name of the key ring containing the signing key. */
   keyRingId?: string;
+  /** Name of the crypto key used for signing. */
   keyId?: string;
+  /** Version of the crypto key, e.g. `1`. */
   keyVersion?: string;
   /** Full resource name, e.g. projects/.../locations/.../keyRings/.../cryptoKeys/.../cryptoKeyVersions/... */
   keyResourceName?: string;
+  /** Optional KMS API endpoint override (useful for emulators or private endpoints). */
   endpoint?: string;
 }
 
+/**
+ * Configuration for {@link Signer} implementations backed by HashiCorp Vault's
+ * Transit secrets engine.
+ *
+ * @example
+ * ```ts
+ * const config: VaultSignerConfig = {
+ *   vaultUrl: 'https://vault.internal:8200',
+ *   token: process.env.VAULT_TOKEN!,
+ *   keyName: 'stellar-cosigner',
+ *   mountPath: 'transit',
+ * };
+ * ```
+ */
 export interface VaultSignerConfig {
+  /** Base URL of the Vault server, e.g. `https://vault.internal:8200`. */
   vaultUrl: string;
+  /** Vault authentication token with access to the transit key. */
   token: string;
+  /** Name of the transit key used for signing. */
   keyName: string;
-  mountPath?: string; // defaults to 'transit'
+  /** Transit engine mount path. Defaults to `'transit'`. */
+  mountPath?: string;
+  /** Optional Vault Enterprise namespace. */
   namespace?: string;
+  /** Whether the payload is already hashed before being sent to Vault. */
   prehashed?: boolean;
 }
 
+/**
+ * Configuration for {@link Signer} implementations backed by a PKCS#11
+ * device (HSM, SoftHSM, etc.).
+ *
+ * @example
+ * ```ts
+ * const config: Pkcs11SignerConfig = {
+ *   modulePath: '/usr/lib/softhsm/libsofthsm2.so',
+ *   slotId: 0,
+ *   pin: process.env.PKCS11_PIN!,
+ *   keyLabel: 'stellar-cosigner',
+ * };
+ * ```
+ */
 export interface Pkcs11SignerConfig {
   /** Path to the PKCS#11 provider library, e.g. /usr/lib/softhsm/libsofthsm2.so */
   modulePath: string;

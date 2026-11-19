@@ -5,6 +5,18 @@ import { LumenProvider } from "./context.js";
 import { useSocialRecovery } from "./use-social-recovery.js";
 import type { RecoveryRequest } from "./use-social-recovery.js";
 
+const renderCounts = vi.hoisted(() => ({ value: 0 }));
+vi.mock("./context.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./context.js")>();
+  return {
+    ...actual,
+    useLumen: () => {
+      renderCounts.value += 1;
+      return actual.useLumen();
+    },
+  };
+});
+
 describe("useSocialRecovery HTTP methods", () => {
   const walletId = "wallet/private?owner=1";
   const newPublicKey = "new+public&key";
@@ -28,6 +40,7 @@ describe("useSocialRecovery HTTP methods", () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    renderCounts.value = 0;
     post.mockReset().mockResolvedValue(pending);
     get.mockReset().mockResolvedValue(pending);
   });
@@ -78,6 +91,25 @@ describe("useSocialRecovery HTTP methods", () => {
     expect(result.current.recoveryStatus).toBe("cancelled");
     await act(() => vi.advanceTimersByTimeAsync(10_000));
     expect(get).not.toHaveBeenCalled();
+  });
+
+  it("only re-renders when relevant recovery state changes", async () => {
+    const { result, rerender } = setup();
+    const initialRenders = renderCounts.value;
+
+    rerender();
+    expect(renderCounts.value).toBe(initialRenders + 1);
+
+    await act(() => result.current.initiateRecovery(newPublicKey));
+    const afterInitiate = renderCounts.value;
+    expect(afterInitiate).toBeGreaterThan(initialRenders);
+
+    rerender();
+    expect(renderCounts.value).toBe(afterInitiate + 1);
+
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(renderCounts.value).toBe(afterInitiate + 1);
   });
 
   it.each(["initiate", "approve", "cancel"])(

@@ -5,6 +5,8 @@ import { LumenProvider, useLumen } from "./context.js";
 import { useBalance } from "./use-balance.js";
 import type { LumenClient } from "@lumen/web-sdk";
 
+const createClient = (): LumenClient => ({}) as LumenClient;
+
 describe("LumenProvider", () => {
   it("provides the Lumen client through useLumen", () => {
     const client = {} as LumenClient;
@@ -114,5 +116,113 @@ describe("LumenProvider network switching", () => {
 
     await waitFor(() => expect(result.current.balance.balance).toBe("99"));
     expect(mainnetClient.getBalance).toHaveBeenCalledWith("GABC", undefined);
+  });
+});
+
+describe("LumenProvider render counts", () => {
+  it("does not re-render consumers when unrelated state changes", () => {
+    const client = createClient();
+    const otherClient = createClient();
+    const renderCount = vi.fn();
+
+    const { result, rerender } = renderHook(
+      () => {
+        const lumen = useLumen();
+        renderCount();
+        return lumen;
+      },
+      {
+        wrapper: ({ children }) => (
+          <LumenProvider client={client}>{children}</LumenProvider>
+        ),
+      }
+    );
+
+    expect(renderCount).toHaveBeenCalledTimes(1);
+
+    // Re-rendering the provider with the same client should not notify
+    // consumers of any state change.
+    rerender();
+
+    expect(renderCount).toHaveBeenCalledTimes(1);
+    expect(result.current.client).toBe(client);
+
+    // Switching to a different client is a relevant change and should
+    // trigger a re-render.
+    act(() => result.current.switchNetwork("testnet"));
+
+    expect(result.current.client).toBe(otherClient);
+  });
+
+  it("only re-renders consumers subscribed to the changed slice", () => {
+    const testnetClient = createClient();
+    const mainnetClient = createClient();
+    const clientRenderCount = vi.fn();
+    const networkRenderCount = vi.fn();
+
+    const { result } = renderHook(
+      () => {
+        const { client } = useLumen();
+        clientRenderCount();
+        return client;
+      },
+      {
+        wrapper: ({ children }) => (
+          <LumenProvider
+            client={testnetClient}
+            createClient={() => mainnetClient}
+          >
+            {children}
+          </LumenProvider>
+        ),
+      }
+    );
+
+    const networkHook = renderHook(
+      () => {
+        const { currentNetwork } = useLumen();
+        networkRenderCount();
+        return currentNetwork;
+      },
+      {
+        wrapper: ({ children }) => (
+          <LumenProvider
+            client={testnetClient}
+            createClient={() => mainnetClient}
+          >
+            {children}
+          </LumenProvider>
+        ),
+      }
+    );
+
+    expect(result.current).toBe(testnetClient);
+    expect(networkHook.result.current).toBe("testnet");
+    expect(clientRenderCount).toHaveBeenCalledTimes(1);
+    expect(networkRenderCount).toHaveBeenCalledTimes(1);
+
+    act(() => networkHook.result.current && undefined);
+
+    // No state change occurred, so neither consumer should re-render.
+    expect(clientRenderCount).toHaveBeenCalledTimes(1);
+    expect(networkRenderCount).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the client reference stable across unrelated state updates", () => {
+    const client = createClient();
+
+    const { result, rerender } = renderHook(() => useLumen(), {
+      wrapper: ({ children }) => (
+        <LumenProvider client={client}>{children}</LumenProvider>
+      ),
+    });
+
+    const initialClient = result.current.client;
+    const initialSwitchNetwork = result.current.switchNetwork;
+
+    rerender();
+
+    expect(result.current.client).toBe(initialClient);
+    expect(result.current.switchNetwork).toBe(initialSwitchNetwork);
   });
 });

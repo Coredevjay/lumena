@@ -1,4 +1,19 @@
-export { StellarClient } from "./stellar/client.js";
+/**
+ * Crypto adapter used across the SDK. Prefers Web Crypto (`crypto.subtle`)
+ * and falls back to Node's `node:crypto` when unavailable.
+ */
+export {
+  getCrypto,
+  randomBytes,
+  sha256,
+  hmacSha256,
+  type CryptoAdapter,
+} from "./crypto/index.js";
+/**
+ * High-level Stellar client. See {@link StellarClientOptions} for all
+ * configuration options (networks, timeouts, sponsor, signer).
+ */
+export { StellarClient, type StellarClientOptions } from "./stellar/client.js";
 export { createSponsoredAccount } from "./stellar/account.js";
 export {
   setupMultisig,

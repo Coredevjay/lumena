@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { LumenClient } from "@lumen/web-sdk";
 
-import { LumenProvider } from "./context.js";
+import { LumenProvider, useLumenStore } from "./context.js";
 import { useSendPayment } from "./use-send-payment.js";
 
 describe("useSendPayment", () => {
@@ -116,5 +116,51 @@ describe("useSendPayment", () => {
     expect(result.current.data).toBeUndefined();
     expect(result.current.error).toBeNull();
     expect(result.current.loading).toBe(false);
+  });
+
+  it("only re-renders when relevant state changes", async () => {
+    const sendPayment = vi.fn().mockResolvedValue({
+      hash: "tx-123",
+    });
+
+    const client = {
+      sendPayment,
+    } as unknown as LumenClient;
+
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <LumenProvider client={client}>{children}</LumenProvider>
+    );
+
+    let renderCount = 0;
+
+    const { result } = renderHook(
+      () => {
+        renderCount += 1;
+        return useSendPayment();
+      },
+      { wrapper }
+    );
+
+    const initialRenderCount = renderCount;
+
+    // Unrelated store updates must not re-render the hook consumer.
+    act(() => {
+      useLumenStore.getState().setNetwork("testnet");
+    });
+
+    expect(renderCount).toBe(initialRenderCount);
+
+    // Relevant state changes (payment state) do re-render the consumer.
+    await act(async () => {
+      await result.current.sendPayment({
+        walletId: "wallet-1",
+        destination: "destination-1",
+        assetCode: "XLM",
+        amount: "10",
+      });
+    });
+
+    expect(renderCount).toBeGreaterThan(initialRenderCount);
+    expect(result.current.data).toEqual({ hash: "tx-123" });
   });
 });

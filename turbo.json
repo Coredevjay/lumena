@@ -23,6 +23,10 @@
     "typecheck": {
       "dependsOn": ["^build"]
     },
+    "validate:package": {
+      "dependsOn": ["build"],
+      "outputs": []
+    },
     "contracts:build": {
       "dependsOn": ["^build"],
       "outputs": ["target/**"]

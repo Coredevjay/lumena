@@ -96,4 +96,34 @@ describe('useTransactionHistory', () => {
     expect(result.current.transactions).toHaveLength(0);
     expect(fetcher).not.toHaveBeenCalled();
   });
+
+  it('only re-renders when relevant state changes', async () => {
+    const fetcher = jest.fn(() =>
+      jsonResponse({
+        transactions: [
+          { id: '1', walletId, hash: '0x1', amount: '10', asset: 'XLM', from: 'a', to: 'b', createdAt: '2024-01-01' },
+        ],
+        nextCursor: null,
+      }),
+    );
+
+    let renderCount = 0;
+    const { result, rerender } = renderHook(() => {
+      renderCount += 1;
+      return useTransactionHistory(walletId, { fetcher: fetcher as unknown as typeof fetch });
+    });
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    const settledRenderCount = renderCount;
+
+    // Re-rendering with identical inputs must not trigger additional renders
+    // from the selector-based store.
+    rerender();
+    rerender();
+
+    expect(renderCount).toBe(settledRenderCount + 2);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.current.transactions).toHaveLength(1);
+  });
 });

@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useLumen } from "./context.js";
+import { useLumenClient } from "./context.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -99,7 +99,7 @@ export function useSocialRecovery(
   walletId: string,
   options: UseSocialRecoveryOptions = {},
 ): UseSocialRecoveryResult {
-  const { client } = useLumen();
+  const client = useLumenClient();
   const { pollInterval = 5_000 } = options;
 
   const [recovery, setRecovery] = useState<RecoveryRequest | null>(null);

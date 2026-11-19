@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { resolveDestination } from "@lumen/core";
-import { useLumen } from "./context.js";
+import { useLumenClient } from "./context.js";
 import { useBalance } from "./use-balance.js";
 import { useToast, type ToastContextValue } from "./components/LumenToast.js";
 
@@ -59,7 +59,7 @@ export function useGaslessTransaction(
   walletId: string,
   assetCode = "XLM"
 ): UseGaslessTransactionResult {
-  const { client } = useLumen();
+  const client = useLumenClient();
   const toast = useOptionalToast();
   const { balance: confirmedBalance, refetch } = useBalance(walletId, assetCode);
 

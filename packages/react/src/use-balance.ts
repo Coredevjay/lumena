@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useLumen } from "./context.js";
 
 export interface UseBalanceResult {
@@ -12,6 +12,43 @@ export interface UseBalanceResult {
 
 const DEFAULT_REFRESH_INTERVAL = 10_000;
 
+interface BalanceState {
+  balance: string | undefined;
+  loading: boolean;
+  error: Error | null;
+}
+
+interface BalanceStore {
+  getState: () => BalanceState;
+  subscribe: (listener: () => void) => () => void;
+  setState: (next: Partial<BalanceState>) => void;
+}
+
+function createBalanceStore(): BalanceStore {
+  let state: BalanceState = {
+    balance: undefined,
+    loading: true,
+    error: null,
+  };
+  const listeners = new Set<() => void>();
+
+  return {
+    getState: () => state,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    setState: (next) => {
+      state = { ...state, ...next };
+      for (const listener of listeners) {
+        listener();
+      }
+    },
+  };
+}
+
 export function useBalance(
   walletId: string,
   assetCode?: string,
@@ -19,25 +56,28 @@ export function useBalance(
 ): UseBalanceResult {
   const { client } = useLumen();
 
-  const [balance, setBalance] = useState<string>();
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
+  const store = useMemo(() => createBalanceStore(), []);
+
+  const state = useSyncExternalStore(
+    store.subscribe,
+    store.getState,
+    store.getState
+  );
 
   const refetch = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+    store.setState({ loading: true, error: null });
 
     try {
       const nextBalance = await client.getBalance(walletId, assetCode);
-      setBalance(nextBalance);
+      store.setState({ balance: nextBalance });
     } catch (error) {
-      setError(
-        error instanceof Error ? error : new Error(String(error))
-      );
+      store.setState({
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
     } finally {
-      setLoading(false);
+      store.setState({ loading: false });
     }
-  }, [client, walletId, assetCode]);
+  }, [client, walletId, assetCode, store]);
 
   useEffect(() => {
     void refetch();
@@ -60,9 +100,9 @@ export function useBalance(
   }, [refetch, refreshInterval]);
 
   return {
-    balance,
-    loading,
-    error,
+    balance: state.balance,
+    loading: state.loading,
+    error: state.error,
     refetch,
   };
 }

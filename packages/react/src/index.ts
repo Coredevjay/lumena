@@ -1,11 +1,23 @@
 "use client";
 
-export { LumenProvider, useLumen, LumenServerProvider } from "./context.js";
+export {
+  LumenProvider,
+  useLumen,
+  LumenServerProvider,
+  useLumenClient,
+  useLumenNetwork,
+  useLumenWallet,
+  useLumenSelector,
+  useLumenStore,
+} from "./context.js";
 export type {
   LumenContextValue,
   LumenProviderProps,
   LumenServerProviderProps,
   LumenNetwork,
+  LumenState,
+  LumenSelector,
+  LumenStore,
 } from "./context.js";
 
 export { useIsMounted } from "./hooks/use-is-mounted.js";

@@ -2,7 +2,7 @@ import { renderHook, act, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, afterEach } from "vitest";
 
 import type { LumenClient } from "@lumen/web-sdk";
-import { LumenProvider } from "./context.js";
+import { LumenProvider, useLumenStore } from "./context.js";
 import { useBalance } from "./use-balance.js";
 
 describe("useBalance", () => {
@@ -94,5 +94,53 @@ describe("useBalance", () => {
 
     expect(result.current.balance).toBe("125");
     expect(getBalance).toHaveBeenCalledTimes(2);
+  });
+
+  it("only re-renders when balance state changes", async () => {
+    const getBalance = vi.fn().mockResolvedValue("125.50");
+
+    const client = {
+      getBalance,
+    } as unknown as LumenClient;
+
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <LumenProvider client={client}>{children}</LumenProvider>
+    );
+
+    let renderCount = 0;
+    let setNetwork: ((network: string) => void) | undefined;
+
+    const { result } = renderHook(
+      () => {
+        renderCount += 1;
+        const store = useLumenStore();
+        setNetwork = store.setNetwork;
+        return useBalance("wallet-1", "XLM", 0);
+      },
+      { wrapper }
+    );
+
+    await waitFor(() => {
+      expect(result.current.balance).toBe("125.50");
+    });
+
+    const rendersAfterLoad = renderCount;
+
+    // Unrelated state change (network) must not re-render the balance consumer.
+    await act(async () => {
+      setNetwork?.("testnet");
+      await Promise.resolve();
+    });
+
+    expect(renderCount).toBe(rendersAfterLoad);
+
+    // A relevant change (balance) must re-render the consumer.
+    await act(async () => {
+      getBalance.mockResolvedValueOnce("200");
+      await result.current.refresh();
+    });
+
+    expect(renderCount).toBeGreaterThan(rendersAfterLoad);
+    expect(result.current.balance).toBe("200");
   });
 });

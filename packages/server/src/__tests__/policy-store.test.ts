@@ -48,6 +48,99 @@ describe("InMemoryPolicyStore", () => {
     const count3 = await store.recordVelocity("w1", now + 70000, 60000);
     expect(count3).toBe(1);
   });
+
+  it("creates a version per change with author and timestamp", async () => {
+    const store = new InMemoryPolicyStore();
+    const policy: Policy = {
+      id: "p1",
+      walletId: "w1",
+      rules: [{ type: "max_operations", maxOperations: 3 }],
+      createdAt: new Date(),
+    };
+
+    await store.savePolicy(policy, { author: "alice" });
+    await store.savePolicy(
+      { ...policy, rules: [{ type: "max_operations", maxOperations: 5 }] },
+      { author: "bob" },
+    );
+
+    const versions = await store.listPolicyVersions("p1");
+    expect(versions).toHaveLength(2);
+    expect(versions[0].author).toBe("alice");
+    expect(versions[1].author).toBe("bob");
+    expect(versions[0].rules).toEqual([{ type: "max_operations", maxOperations: 3 }]);
+    expect(versions[1].rules).toEqual([{ type: "max_operations", maxOperations: 5 }]);
+    expect(versions[0].createdAt).toBeInstanceOf(Date);
+    expect(versions[1].createdAt.getTime()).toBeGreaterThanOrEqual(
+      versions[0].createdAt.getTime(),
+    );
+  });
+
+  it("lists versions in chronological order", async () => {
+    const store = new InMemoryPolicyStore();
+    const policy: Policy = {
+      id: "p1",
+      walletId: "w1",
+      rules: [],
+      createdAt: new Date(),
+    };
+
+    await store.savePolicy(policy, { author: "a" });
+    await store.savePolicy({ ...policy, rules: [{ type: "max_operations", maxOperations: 1 }] }, { author: "b" });
+    await store.savePolicy({ ...policy, rules: [{ type: "max_operations", maxOperations: 2 }] }, { author: "c" });
+
+    const versions = await store.listPolicyVersions("p1");
+    expect(versions.map((v) => v.author)).toEqual(["a", "b", "c"]);
+    expect(versions.map((v) => v.version)).toEqual([1, 2, 3]);
+  });
+
+  it("rolls back to a target version and appends a new version", async () => {
+    const store = new InMemoryPolicyStore();
+    const policy: Policy = {
+      id: "p1",
+      walletId: "w1",
+      rules: [{ type: "max_operations", maxOperations: 3 }],
+      createdAt: new Date(),
+    };
+
+    await store.savePolicy(policy, { author: "alice" });
+    await store.savePolicy(
+      { ...policy, rules: [{ type: "max_operations", maxOperations: 99 }] },
+      { author: "mallory" },
+    );
+
+    const versions = await store.listPolicyVersions("p1");
+    const target = versions[0];
+
+    const rolledBack = await store.rollbackPolicy("p1", target.version, { author: "admin" });
+    expect(rolledBack.rules).toEqual([{ type: "max_operations", maxOperations: 3 }]);
+
+    const current = await store.getPolicy("w1");
+    expect(current?.rules).toEqual([{ type: "max_operations", maxOperations: 3 }]);
+
+    const after = await store.listPolicyVersions("p1");
+    expect(after).toHaveLength(3);
+    expect(after[2].author).toBe("admin");
+    expect(after[2].rules).toEqual([{ type: "max_operations", maxOperations: 3 }]);
+  });
+
+  it("round-trips a policy through export and import", async () => {
+    const store = new InMemoryPolicyStore();
+    const policy: Policy = {
+      id: "p1",
+      walletId: "w1",
+      rules: [{ type: "max_operations", maxOperations: 7 }],
+      createdAt: new Date(),
+    };
+    await store.savePolicy(policy, { author: "alice" });
+
+    const exported = await store.exportPolicy("p1");
+    expect(exported.rules).toEqual(policy.rules);
+
+    const imported = await store.importPolicy(exported, { author: "importer" });
+    expect(imported.rules).toEqual(policy.rules);
+    expect(imported.walletId).toBe("w1");
+  });
 });
 
 describe("RedisPolicyStore", () => {
@@ -253,6 +346,72 @@ describe("FilePolicyStore", () => {
 
       const vel = await store.recordVelocity("w1", Date.now(), 60000);
       expect(vel).toBe(1);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists version history and supports rollback across instances", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "lumen-policy-test-"));
+    const filePath = path.join(tmpDir, "policies.json");
+
+    try {
+      const store1 = new FilePolicyStore(filePath);
+      const policy: Policy = {
+        id: "p1",
+        walletId: "w1",
+        rules: [{ type: "max_operations", maxOperations: 3 }],
+        createdAt: new Date(),
+      };
+
+      await store1.savePolicy(policy, { author: "alice" });
+      await store1.savePolicy(
+        { ...policy, rules: [{ type: "max_operations", maxOperations: 99 }] },
+        { author: "mallory" },
+      );
+
+      const store2 = new FilePolicyStore(filePath);
+      const versions = await store2.listPolicyVersions("p1");
+      expect(versions).toHaveLength(2);
+      expect(versions.map((v) => v.author)).toEqual(["alice", "mallory"]);
+
+      const rolledBack = await store2.rollbackPolicy("p1", versions[0].version, {
+        author: "admin",
+      });
+      expect(rolledBack.rules).toEqual([{ type: "max_operations", maxOperations: 3 }]);
+
+      const store3 = new FilePolicyStore(filePath);
+      const current = await store3.getPolicy("w1");
+      expect(current?.rules).toEqual([{ type: "max_operations", maxOperations: 3 }]);
+
+      const after = await store3.listPolicyVersions("p1");
+      expect(after).toHaveLength(3);
+      expect(after[2].author).toBe("admin");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("round-trips a policy through export and import", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "lumen-policy-test-"));
+    const filePath = path.join(tmpDir, "policies.json");
+
+    try {
+      const store = new FilePolicyStore(filePath);
+      const policy: Policy = {
+        id: "p1",
+        walletId: "w1",
+        rules: [{ type: "max_operations", maxOperations: 7 }],
+        createdAt: new Date(),
+      };
+      await store.savePolicy(policy, { author: "alice" });
+
+      const exported = await store.exportPolicy("p1");
+      expect(exported.rules).toEqual(policy.rules);
+
+      const imported = await store.importPolicy(exported, { author: "importer" });
+      expect(imported.rules).toEqual(policy.rules);
+      expect(imported.walletId).toBe("w1");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

@@ -10,6 +10,7 @@ import type {
 } from '@lumen/types';
 import type {
   PolicyStore,
+  PolicyVersion,
   WalletRegistry,
   TenantStore,
   Tenant,
@@ -72,6 +73,15 @@ interface PrismaPolicyRuleRow {
   order: number;
   createdAt: Date;
   updatedAt: Date;
+}
+
+interface PrismaPolicyVersionRow {
+  id: string;
+  policyId: string;
+  version: number;
+  snapshot: unknown;
+  author: string | null;
+  createdAt: Date;
 }
 
 interface PrismaWalletRow {
@@ -149,6 +159,17 @@ function mapPolicyRowToPolicy(row: PrismaPolicyRow): Policy {
       .map(mapRuleRowToRule),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+function mapPolicyVersionRowToVersion(row: PrismaPolicyVersionRow): PolicyVersion {
+  return {
+    id: row.id,
+    policyId: row.policyId,
+    version: row.version,
+    snapshot: (row.snapshot ?? {}) as Policy,
+    author: row.author ?? undefined,
+    createdAt: row.createdAt.toISOString(),
   };
 }
 
@@ -279,10 +300,21 @@ export class PrismaPolicyStore implements PolicyStore {
         });
       }
 
-      return tx.policy.findUnique({
+      const persisted = await tx.policy.findUnique({
         where: { id: policyRow.id },
         include: { rules: true },
       });
+
+      if (!persisted) {
+        throw new Error(`Failed to persist policy ${policy.id}`);
+      }
+
+      // Capture an immutable snapshot for every change so the policy can be
+      // audited and rolled back later.
+      const mapped = mapPolicyRowToPolicy(persisted as unknown as PrismaPolicyRow);
+      await this.writeVersionRow(tx, mapped, policy.updatedBy);
+
+      return persisted;
     });
 
     if (!saved) {
@@ -291,9 +323,92 @@ export class PrismaPolicyStore implements PolicyStore {
     return mapPolicyRowToPolicy(saved as unknown as PrismaPolicyRow);
   }
 
+  async savePolicyVersion(policy: Policy, author?: string): Promise<PolicyVersion> {
+    const row = await this.prisma.$transaction(async (tx) => {
+      const persisted = await tx.policy.findUnique({
+        where: { id: policy.id },
+        include: { rules: true },
+      });
+      if (!persisted) {
+        throw new Error(`Policy ${policy.id} not found`);
+      }
+      const mapped = mapPolicyRowToPolicy(persisted as unknown as PrismaPolicyRow);
+      return this.writeVersionRow(tx, mapped, author);
+    });
+    return mapPolicyVersionRowToVersion(row as unknown as PrismaPolicyVersionRow);
+  }
+
+  async listPolicyVersions(policyId: string): Promise<PolicyVersion[]> {
+    const rows = await this.prisma.policyVersion.findMany({
+      where: { policyId },
+      orderBy: { version: 'desc' },
+    });
+    return rows.map((row) =>
+      mapPolicyVersionRowToVersion(row as unknown as PrismaPolicyVersionRow),
+    );
+  }
+
+  async getPolicyVersion(policyId: string, version: number): Promise<PolicyVersion | null> {
+    const row = await this.prisma.policyVersion.findUnique({
+      where: { policyId_version: { policyId, version } },
+    });
+    return row ? mapPolicyVersionRowToVersion(row as unknown as PrismaPolicyVersionRow) : null;
+  }
+
+  async rollbackPolicy(
+    policyId: string,
+    targetVersion: number,
+    author?: string,
+  ): Promise<Policy> {
+    const target = await this.getPolicyVersion(policyId, targetVersion);
+    if (!target) {
+      throw new Error(`Policy ${policyId} version ${targetVersion} not found`);
+    }
+
+    const snapshot = target.snapshot;
+    const restored: Policy = {
+      ...snapshot,
+      id: policyId,
+      updatedAt: new Date().toISOString(),
+      updatedBy: author ?? snapshot.updatedBy,
+    };
+
+    // savePolicy writes the restored definition and records a new version row,
+    // so the rollback itself is part of the audit history.
+    return this.savePolicy(restored);
+  }
+
+  /**
+   * Inserts the next sequential version row for a policy snapshot.
+   */
+  private async writeVersionRow(
+    tx: Pick<PrismaClient, 'policyVersion'>,
+    policy: Policy,
+    author?: string,
+  ): Promise<unknown> {
+    const latest = await tx.policyVersion.findFirst({
+      where: { policyId: policy.id },
+      orderBy: { version: 'desc' },
+      select: { version: true },
+    });
+    const nextVersion = (latest?.version ?? 0) + 1;
+
+    return tx.policyVersion.create({
+      data: {
+        policyId: policy.id,
+        version: nextVersion,
+        snapshot: policy as unknown as object,
+        author: author ?? null,
+      },
+    });
+  }
+
   async deletePolicy(policyId: string): Promise<boolean> {
     try {
-      await this.prisma.policy.delete({ where: { id: policyId } });
+      await this.prisma.$transaction([
+        this.prisma.policyVersion.deleteMany({ where: { policyId } }),
+        this.prisma.policy.delete({ where: { id: policyId } }),
+      ]);
       return true;
     } catch (err: unknown) {
       if (isNotFoundError(err)) {

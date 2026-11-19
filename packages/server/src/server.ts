@@ -967,6 +967,147 @@ return 1
     res.json(policy);
   });
 
+  // #499 — dry-run policy evaluation. Evaluates the supplied XDR against the
+  // stored policy and returns the decision without cosigning or recording
+  // velocity, so integrators can ask "would this pass?" safely.
+  app.post(
+    "/policy/:walletId/evaluate",
+    rbac.requirePermission("policy:read"),
+    wrapHandler(async (req: Request, res: Response) => {
+      const walletId = req.params.walletId as string;
+      const policy = policyEngine.getPolicy(walletId);
+      if (!policy) {
+        throw new PolicyError("No policy found", 404);
+      }
+
+      const body: unknown = req.body;
+      const xdrValue =
+        typeof body === "object" && body !== null && "xdr" in body
+          ? (body as { xdr?: unknown }).xdr
+          : undefined;
+      if (typeof xdrValue !== "string" || xdrValue.trim() === "") {
+        throw new ValidationError("xdr must be a non-empty string");
+      }
+
+      let transaction: Transaction;
+      try {
+        const parsed = TransactionBuilder.fromXDR(xdrValue, client.networkPassphrase);
+        if (!(parsed instanceof Transaction)) {
+          throw new Error("not a Transaction");
+        }
+        transaction = parsed;
+      } catch {
+        throw new ValidationError("xdr must be a valid Stellar transaction envelope");
+      }
+
+      const evaluation = policyEngine.evaluateDryRun(policy, transaction);
+      res.json({
+        approved: evaluation.approved,
+        reason: evaluation.reason,
+        results: evaluation.results,
+      });
+    }),
+  );
+
+  // #500 — immutable policy version history and rollback.
+  app.get(
+    "/policy/:id/versions",
+    rbac.requirePermission("policy:read"),
+    wrapHandler(async (req: Request, res: Response) => {
+      const id = req.params.id as string;
+      const versions = await policyEngine.listPolicyVersions(id);
+      if (versions === undefined) {
+        throw new PolicyError("No policy found", 404);
+      }
+      res.json({ versions });
+    }),
+  );
+
+  app.post(
+    "/policy/:id/rollback",
+    rbac.requirePermission("policy:write"),
+    idempotency,
+    wrapHandler(async (req: Request, res: Response) => {
+      const id = req.params.id as string;
+      const body: unknown = req.body;
+      const versionValue =
+        typeof body === "object" && body !== null && "version" in body
+          ? (body as { version?: unknown }).version
+          : undefined;
+      if (typeof versionValue !== "number" || !Number.isInteger(versionValue) || versionValue < 1) {
+        throw new ValidationError("version must be a positive integer");
+      }
+
+      const actor = req.tenant?.id ?? req.tenant?.name ?? "api";
+      const policy = await policyEngine.rollbackPolicy(id, versionValue, actor);
+      if (!policy) {
+        throw new PolicyError("No policy found", 404);
+      }
+
+      res.setHeader("ETag", `"${policy.version}"`);
+      res.json(policy);
+    }),
+  );
+
+  // #501 — named policy templates and JSON import/export.
+  app.get(
+    "/policy/templates",
+    rbac.requirePermission("policy:read"),
+    wrapHandler(async (_req: Request, res: Response) => {
+      res.json({ templates: policyEngine.listTemplates() });
+    }),
+  );
+
+  app.post(
+    "/policy/templates/:name/apply",
+    rbac.requirePermission("policy:write"),
+    idempotency,
+    wrapHandler(async (req: Request, res: Response) => {
+      const name = req.params.name as string;
+      const body: unknown = req.body;
+      const walletId =
+        typeof body === "object" && body !== null && "walletId" in body
+          ? (body as { walletId?: unknown }).walletId
+          : undefined;
+      if (typeof walletId !== "string" || walletId.trim() === "") {
+        throw new ValidationError("walletId must be a non-empty string");
+      }
+
+      const policy = await policyEngine.createPolicyFromTemplate(name, walletId);
+      if (!policy) {
+        throw new PolicyError("Unknown policy template", 404);
+      }
+
+      res.status(201).json(policy);
+    }),
+  );
+
+  app.get(
+    "/policy/:walletId/export",
+    rbac.requirePermission("policy:read"),
+    wrapHandler(async (req: Request, res: Response) => {
+      const walletId = req.params.walletId as string;
+      const policy = policyEngine.getPolicy(walletId);
+      if (!policy) {
+        throw new PolicyError("No policy found", 404);
+      }
+      res.json(policy);
+    }),
+  );
+
+  app.post(
+    "/policy/import",
+    rbac.requirePermission("policy:write"),
+    idempotency,
+    wrapHandler(async (req: Request, res: Response) => {
+      const policy = await policyEngine.importPolicy(req.body);
+      if (!policy) {
+        throw new ValidationError("Invalid policy document");
+      }
+      res.status(201).json(policy);
+    }),
+  );
+
   app.post(
     "/policy",
     rbac.requirePermission("policy:write"),

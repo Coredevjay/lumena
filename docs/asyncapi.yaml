@@ -1,0 +1,314 @@
+asyncapi: 3.0.0
+info:
+  title: Wallet WebSocket Event Stream
+  version: 1.0.0
+  description: |
+    AsyncAPI document describing the WebSocket event stream exposed by the
+    backend. Two channels are available:
+
+    * **audit** — broadcasts `AuditEvent` messages for every audited action.
+    * **wallet** — per-wallet subscription stream emitting `wallet_event`
+      messages for the subscribed wallet address.
+
+    ## Authentication handshake
+
+    Clients must authenticate and subscribe before receiving messages. Two
+    subscription mechanisms are supported on the wallet channel:
+
+    1. A plain-text frame of the form `subscribe:wallet:<address>`.
+    2. A JSON frame of the form
+       `{"type":"subscribe","channel":"wallet","walletAddress":"<address>"}`.
+
+    The audit channel is broadcast to all connected clients and requires no
+    per-channel subscription frame.
+
+    ## Webhook event types
+
+    The `event` field of a `wallet_event` message carries one of the webhook
+    event types: `wallet.created`, `transaction.cosigned`,
+    `transaction.sponsored`, `transaction.fee_bump.submitted`,
+    `policy.violated`, `balance.low`.
+  license:
+    name: MIT
+defaultContentType: application/json
+servers:
+  production:
+    host: api.example.com
+    protocol: wss
+    description: Production WebSocket endpoint.
+  staging:
+    host: staging-api.example.com
+    protocol: wss
+    description: Staging WebSocket endpoint.
+channels:
+  audit:
+    address: /ws/audit
+    title: Audit Stream
+    description: |
+      Broadcast channel emitting `AuditEvent` messages for every audited
+      action. All connected clients receive every audit event.
+    messages:
+      auditEvent:
+        $ref: '#/components/messages/AuditEvent'
+  wallet:
+    address: /ws/wallet
+    title: Wallet Subscription Stream
+    description: |
+      Per-wallet subscription stream. After the authentication handshake and
+      a subscription frame, the server emits `wallet_event` messages for the
+      subscribed wallet address.
+    messages:
+      walletEvent:
+        $ref: '#/components/messages/WalletEvent'
+      subscribeWalletText:
+        $ref: '#/components/messages/SubscribeWalletText'
+      subscribeWalletJson:
+        $ref: '#/components/messages/SubscribeWalletJson'
+operations:
+  receiveAuditEvent:
+    action: receive
+    channel:
+      $ref: '#/channels/audit'
+    summary: Receive audit events broadcast by the server.
+    messages:
+      - $ref: '#/channels/audit/messages/auditEvent'
+  receiveWalletEvent:
+    action: receive
+    channel:
+      $ref: '#/channels/wallet'
+    summary: Receive wallet events for the subscribed wallet address.
+    messages:
+      - $ref: '#/channels/wallet/messages/walletEvent'
+  sendSubscribeWalletText:
+    action: send
+    channel:
+      $ref: '#/channels/wallet'
+    summary: Subscribe to a wallet using the plain-text frame.
+    description: |
+      Send a plain-text frame of the form `subscribe:wallet:<address>` to
+      subscribe to events for the given wallet address.
+    messages:
+      - $ref: '#/channels/wallet/messages/subscribeWalletText'
+  sendSubscribeWalletJson:
+    action: send
+    channel:
+      $ref: '#/channels/wallet'
+    summary: Subscribe to a wallet using the JSON frame.
+    description: |
+      Send a JSON frame of the form
+      `{"type":"subscribe","channel":"wallet","walletAddress":"<address>"}`
+      to subscribe to events for the given wallet address.
+    messages:
+      - $ref: '#/channels/wallet/messages/subscribeWalletJson'
+components:
+  messages:
+    AuditEvent:
+      name: AuditEvent
+      title: Audit Event
+      summary: An audited action broadcast to all connected clients.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/AuditEvent'
+      examples:
+        - name: transactionApproved
+          summary: A transaction was approved.
+          payload:
+            timestamp: '2024-01-15T10:30:00.000Z'
+            decision: approved
+            wallet: '0x1234567890abcdef1234567890abcdef12345678'
+            txHash: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd'
+            fee: '0.0012'
+            reason: null
+        - name: transactionDenied
+          summary: A transaction was denied by policy.
+          payload:
+            timestamp: '2024-01-15T10:31:00.000Z'
+            decision: denied
+            wallet: '0x1234567890abcdef1234567890abcdef12345678'
+            txHash: '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef'
+            fee: '0.0005'
+            reason: 'Exceeds daily spending limit'
+    WalletEvent:
+      name: WalletEvent
+      title: Wallet Event
+      summary: An event emitted for a subscribed wallet address.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/WalletEvent'
+      examples:
+        - name: walletCreated
+          summary: A new wallet was created.
+          payload:
+            walletAddress: '0x1234567890abcdef1234567890abcdef12345678'
+            event: wallet.created
+            timestamp: '2024-01-15T10:00:00.000Z'
+            payload:
+              ownerId: 'user_42'
+              network: mainnet
+        - name: transactionCosigned
+          summary: A transaction was cosigned.
+          payload:
+            walletAddress: '0x1234567890abcdef1234567890abcdef12345678'
+            event: transaction.cosigned
+            timestamp: '2024-01-15T10:05:00.000Z'
+            payload:
+              txHash: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd'
+              cosigner: '0x9876543210fedcba9876543210fedcba98765432'
+        - name: transactionSponsored
+          summary: A transaction was sponsored.
+          payload:
+            walletAddress: '0x1234567890abcdef1234567890abcdef12345678'
+            event: transaction.sponsored
+            timestamp: '2024-01-15T10:10:00.000Z'
+            payload:
+              txHash: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd'
+              sponsor: '0x9876543210fedcba9876543210fedcba98765432'
+              fee: '0.0012'
+        - name: transactionFeeBumpSubmitted
+          summary: A fee bump transaction was submitted.
+          payload:
+            walletAddress: '0x1234567890abcdef1234567890abcdef12345678'
+            event: transaction.fee_bump.submitted
+            timestamp: '2024-01-15T10:15:00.000Z'
+            payload:
+              txHash: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd'
+              previousFee: '0.0012'
+              newFee: '0.0024'
+        - name: policyViolated
+          summary: A policy was violated.
+          payload:
+            walletAddress: '0x1234567890abcdef1234567890abcdef12345678'
+            event: policy.violated
+            timestamp: '2024-01-15T10:20:00.000Z'
+            payload:
+              policyId: 'policy_daily_limit'
+              reason: 'Exceeds daily spending limit'
+              txHash: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd'
+        - name: balanceLow
+          summary: The wallet balance dropped below the configured threshold.
+          payload:
+            walletAddress: '0x1234567890abcdef1234567890abcdef12345678'
+            event: balance.low
+            timestamp: '2024-01-15T10:25:00.000Z'
+            payload:
+              balance: '0.05'
+              threshold: '0.1'
+              asset: XLM
+    SubscribeWalletText:
+      name: SubscribeWalletText
+      title: Subscribe (plain text)
+      summary: Plain-text subscription frame.
+      contentType: text/plain
+      payload:
+        type: string
+        pattern: '^subscribe:wallet:0x[0-9a-fA-F]{40}$'
+        description: |
+          Plain-text subscription frame of the form
+          `subscribe:wallet:<address>`.
+      examples:
+        - name: subscribeText
+          summary: Subscribe to a wallet using the plain-text frame.
+          payload: 'subscribe:wallet:0x1234567890abcdef1234567890abcdef12345678'
+    SubscribeWalletJson:
+      name: SubscribeWalletJson
+      title: Subscribe (JSON)
+      summary: JSON subscription frame.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/SubscribeWalletJson'
+      examples:
+        - name: subscribeJson
+          summary: Subscribe to a wallet using the JSON frame.
+          payload:
+            type: subscribe
+            channel: wallet
+            walletAddress: '0x1234567890abcdef1234567890abcdef12345678'
+  schemas:
+    AuditEvent:
+      type: object
+      description: An audited action broadcast to all connected clients.
+      required:
+        - timestamp
+        - decision
+        - wallet
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Time at which the audited action occurred.
+        decision:
+          type: string
+          description: The decision taken for the audited action.
+          examples:
+            - approved
+            - denied
+        wallet:
+          type: string
+          description: Wallet address the audited action relates to.
+          pattern: '^0x[0-9a-fA-F]{40}$'
+        txHash:
+          type: string
+          nullable: true
+          description: Transaction hash, when the action relates to a transaction.
+          pattern: '^0x[0-9a-fA-F]{64}$'
+        fee:
+          type: string
+          nullable: true
+          description: Fee associated with the action, as a decimal string.
+        reason:
+          type: string
+          nullable: true
+          description: Human-readable reason for the decision, when applicable.
+    WalletEvent:
+      type: object
+      description: An event emitted for a subscribed wallet address.
+      required:
+        - walletAddress
+        - event
+        - timestamp
+      properties:
+        walletAddress:
+          type: string
+          description: Wallet address the event relates to.
+          pattern: '^0x[0-9a-fA-F]{40}$'
+        event:
+          $ref: '#/components/schemas/WalletEventType'
+        timestamp:
+          type: string
+          format: date-time
+          description: Time at which the event occurred.
+        payload:
+          type: object
+          additionalProperties: true
+          description: Event-specific payload.
+    WalletEventType:
+      type: string
+      description: |
+        The webhook event type. One of `wallet.created`,
+        `transaction.cosigned`, `transaction.sponsored`,
+        `transaction.fee_bump.submitted`, `policy.violated`, `balance.low`.
+      enum:
+        - wallet.created
+        - transaction.cosigned
+        - transaction.sponsored
+        - transaction.fee_bump.submitted
+        - policy.violated
+        - balance.low
+    SubscribeWalletJson:
+      type: object
+      description: JSON subscription frame.
+      required:
+        - type
+        - channel
+        - walletAddress
+      properties:
+        type:
+          type: string
+          const: subscribe
+        channel:
+          type: string
+          const: wallet
+        walletAddress:
+          type: string
+          description: Wallet address to subscribe to.
+          pattern: '^0x[0-9a-fA-F]{40}$'

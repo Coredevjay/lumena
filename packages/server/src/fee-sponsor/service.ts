@@ -21,6 +21,8 @@ export interface FeeSponsorOpts {
   maxSubmitAttempts?: number;
   /** Base delay (ms) for exponential backoff. Default 100. */
   retryBaseDelayMs?: number;
+  /** Called whenever a tx_bad_seq triggers an automatic resequence. */
+  onResequence?: () => void;
 }
 
 export class FeeSponsorService {
@@ -31,6 +33,8 @@ export class FeeSponsorService {
   private sequenceAllocator?: SequenceAllocator;
   private maxSubmitAttempts: number;
   private retryBaseDelayMs: number;
+  private onResequence?: () => void;
+  private resequenceCount = 0;
 
   constructor(opts: FeeSponsorOpts) {
     this.client = opts.client;
@@ -40,6 +44,12 @@ export class FeeSponsorService {
     this.sequenceAllocator = opts.sequenceAllocator;
     this.maxSubmitAttempts = opts.maxSubmitAttempts ?? 5;
     this.retryBaseDelayMs = opts.retryBaseDelayMs ?? 100;
+    this.onResequence = opts.onResequence;
+  }
+
+  /** Number of automatic resequence events observed by this service. */
+  get resequenceEvents(): number {
+    return this.resequenceCount;
   }
 
   get publicKey(): string {
@@ -91,9 +101,18 @@ export class FeeSponsorService {
   private isBadSeqError(err: unknown): boolean {
     const anyErr = err as { response?: { data?: { extras?: { result_codes?: { transaction?: string } } } }; message?: string };
     const code = anyErr?.response?.data?.extras?.result_codes?.transaction;
-    if (code === "txBAD_SEQ") return true;
+    if (code === "txBAD_SEQ" || code === "tx_bad_seq") return true;
     const msg = typeof anyErr?.message === "string" ? anyErr.message : "";
-    return msg.includes("txBAD_SEQ");
+    return msg.includes("txBAD_SEQ") || msg.includes("tx_bad_seq");
+  }
+
+  private recordResequence(): void {
+    this.resequenceCount += 1;
+    try {
+      this.onResequence?.();
+    } catch {
+      // Metrics hooks must never break submission.
+    }
   }
 
   private async delay(ms: number): Promise<void> {
@@ -104,6 +123,9 @@ export class FeeSponsorService {
     return trackOperation("fee-bump:submit", async () => {
       let lastError: unknown;
       let reservation: SequenceReservation | undefined;
+      // tx_bad_seq resequencing is limited to exactly one retry, independent
+      // of the general exponential-backoff attempt budget.
+      let resequenced = false;
 
       for (let attempt = 0; attempt < this.maxSubmitAttempts; attempt++) {
         // Reserve a fresh sequence number for each attempt when an allocator
@@ -119,8 +141,7 @@ export class FeeSponsorService {
         try {
           result = await this.client.horizon.submitTransaction(parsed);
         } catch (err) {
-          if (this.isBadSeqError(err) && attempt < this.maxSubmitAttempts - 1) {
-            lastError = err;
+          if (this.isBadSeqError(err)) {
             // Roll back the reservation so the sequence can be reused.
             if (this.sequenceAllocator && reservation !== undefined) {
               await this.sequenceAllocator
@@ -128,9 +149,15 @@ export class FeeSponsorService {
                 .catch(() => {});
             }
             reservation = undefined;
-            const backoff = this.retryBaseDelayMs * 2 ** attempt;
-            await this.delay(backoff);
-            continue;
+
+            // Automatic resequencing: refresh from the allocator, rebuild the
+            // fee-bump envelope and retry exactly once.
+            if (!resequenced) {
+              resequenced = true;
+              lastError = err;
+              this.recordResequence();
+              continue;
+            }
           }
           throw err;
         }

@@ -1,5 +1,15 @@
 import { createHash } from "node:crypto";
 
+export const MAX_EXPLAIN_TRACE_ENTRIES = 50;
+export const TRUNCATION_RULE_ID = "__truncated__";
+
+export interface ExplainTraceEntry {
+  ruleId: string;
+  inputs: Readonly<Record<string, unknown>>;
+  outcome: "approved" | "rejected" | "skipped";
+  reason?: string;
+}
+
 export interface AuditRecord {
   prevHash: string;
   timestamp: string;
@@ -7,6 +17,7 @@ export interface AuditRecord {
   walletAddress: string;
   decision: "approved" | "rejected";
   rulesEvaluated: readonly string[];
+  explainTrace?: readonly ExplainTraceEntry[];
   hash: string;
 }
 
@@ -16,6 +27,68 @@ export interface AuditDecision {
   walletAddress: string;
   decision: "approved" | "rejected";
   rulesEvaluated: string[];
+  explainTrace?: readonly ExplainTraceEntry[];
+}
+
+export interface ExplainTraceOptions {
+  redactAmounts?: boolean;
+}
+
+const AMOUNT_KEY_PATTERN = /amount/i;
+const REDACTED_AMOUNT = "[redacted]";
+
+function redactInputs(inputs: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  const redacted: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(inputs)) {
+    redacted[key] = AMOUNT_KEY_PATTERN.test(key) ? REDACTED_AMOUNT : value;
+  }
+  return redacted;
+}
+
+function normalizeTraceEntry(
+  entry: ExplainTraceEntry,
+  options: ExplainTraceOptions,
+): ExplainTraceEntry {
+  const normalized: ExplainTraceEntry = {
+    ruleId: entry.ruleId,
+    inputs: Object.freeze(options.redactAmounts ? redactInputs(entry.inputs) : { ...entry.inputs }),
+    outcome: entry.outcome,
+  };
+  if (entry.reason !== undefined) normalized.reason = entry.reason;
+  return Object.freeze(normalized);
+}
+
+export function buildExplainTrace(
+  trace: readonly ExplainTraceEntry[] | undefined,
+  options: ExplainTraceOptions = {},
+): readonly ExplainTraceEntry[] | undefined {
+  if (!trace) return undefined;
+  const normalized = trace.map((entry) => normalizeTraceEntry(entry, options));
+  if (normalized.length <= MAX_EXPLAIN_TRACE_ENTRIES) return Object.freeze(normalized);
+  const kept = normalized.slice(0, MAX_EXPLAIN_TRACE_ENTRIES - 1);
+  const truncatedCount = normalized.length - kept.length;
+  kept.push(
+    Object.freeze({
+      ruleId: TRUNCATION_RULE_ID,
+      inputs: Object.freeze({ truncatedCount }),
+      outcome: "skipped" as const,
+      reason: `Trace truncated to ${MAX_EXPLAIN_TRACE_ENTRIES} entries`,
+    }),
+  );
+  return Object.freeze(kept);
+}
+
+function isValidTraceEntry(value: unknown): value is ExplainTraceEntry {
+  if (!value || typeof value !== "object") return false;
+  const entry = value as Record<string, unknown>;
+  return (
+    typeof entry.ruleId === "string" &&
+    !!entry.inputs &&
+    typeof entry.inputs === "object" &&
+    !Array.isArray(entry.inputs) &&
+    (entry.outcome === "approved" || entry.outcome === "rejected" || entry.outcome === "skipped") &&
+    (entry.reason === undefined || typeof entry.reason === "string")
+  );
 }
 
 export interface AuditLogStorage {
@@ -37,11 +110,24 @@ export function parseAuditRecord(raw: string): AuditRecord {
     (record.decision !== "approved" && record.decision !== "rejected") ||
     !Array.isArray(record.rulesEvaluated) ||
     !record.rulesEvaluated.every((rule) => typeof rule === "string") ||
+    (record.explainTrace !== undefined &&
+      (!Array.isArray(record.explainTrace) ||
+        record.explainTrace.length > MAX_EXPLAIN_TRACE_ENTRIES ||
+        !record.explainTrace.every(isValidTraceEntry))) ||
     typeof record.hash !== "string"
   ) {
     throw new Error("Stored audit record has an invalid shape");
   }
-  return Object.freeze({
+  const parsed: {
+    prevHash: string;
+    timestamp: string;
+    txHash: string;
+    walletAddress: string;
+    decision: "approved" | "rejected";
+    rulesEvaluated: readonly string[];
+    explainTrace?: readonly ExplainTraceEntry[];
+    hash: string;
+  } = {
     prevHash: record.prevHash,
     timestamp: record.timestamp,
     txHash: record.txHash,
@@ -49,15 +135,41 @@ export function parseAuditRecord(raw: string): AuditRecord {
     decision: record.decision,
     rulesEvaluated: Object.freeze([...record.rulesEvaluated]),
     hash: record.hash,
-  });
+  };
+  if (record.explainTrace !== undefined) {
+    parsed.explainTrace = Object.freeze(
+      (record.explainTrace as ExplainTraceEntry[]).map((entry) =>
+        Object.freeze({
+          ruleId: entry.ruleId,
+          inputs: Object.freeze({ ...entry.inputs }),
+          outcome: entry.outcome,
+          ...(entry.reason !== undefined ? { reason: entry.reason } : {}),
+        }),
+      ),
+    );
+  }
+  return Object.freeze(parsed);
 }
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === "object") {
+    const source = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(source).sort()) {
+      if (source[key] !== undefined) sorted[key] = canonicalize(source[key]);
+    }
+    return sorted;
+  }
+  return value;
+}
+
 function hashRecord(record: Omit<AuditRecord, "hash">): string {
-  return sha256(JSON.stringify(record));
+  return sha256(JSON.stringify(canonicalize(record)));
 }
 
 export class MerkleAuditLog {
@@ -82,10 +194,11 @@ export class MerkleAuditLog {
     await this.loading;
   }
 
-  append(decision: AuditDecision): Promise<AuditRecord> {
+  append(decision: AuditDecision, options: ExplainTraceOptions = {}): Promise<AuditRecord> {
     const append = this.writeQueue.then(async () => {
       await this.loading;
       for (let attempt = 0; attempt < 10; attempt++) {
+        const explainTrace = buildExplainTrace(decision.explainTrace, options);
         const data: Omit<AuditRecord, "hash"> = {
           prevHash: this.records.at(-1)?.hash ?? "",
           timestamp: decision.timestamp ?? new Date().toISOString(),
@@ -93,6 +206,7 @@ export class MerkleAuditLog {
           walletAddress: decision.walletAddress,
           decision: decision.decision,
           rulesEvaluated: Object.freeze([...decision.rulesEvaluated]),
+          ...(explainTrace !== undefined ? { explainTrace } : {}),
         };
         const record = Object.freeze({ ...data, hash: hashRecord(data) });
         if (!this.storage || (await this.storage.append(record))) {

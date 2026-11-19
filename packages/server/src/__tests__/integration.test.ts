@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
+import { createServer, type Server } from "node:http";
+import { connect, type Socket } from "node:net";
 import { Keypair, TransactionBuilder, Operation, Asset, BASE_FEE } from "@stellar/stellar-sdk";
 import { StellarClient, createSponsoredAccount, setupMultisig } from "@lumen/core";
 import { CosignerService } from "../cosigner/service.js";
@@ -519,6 +521,108 @@ describe("SEP-10 authentication", () => {
 
     const claims = verifyJwt(token, "test-secret-key-for-sep10-integration");
     expect(claims.sub).toBe(clientKeypair.publicKey());
+  });
+});
+
+describe("HTTP server timeouts (slow-client protection)", () => {
+  const HEADERS_TIMEOUT_MS = 200;
+  const REQUEST_TIMEOUT_MS = 400;
+  const KEEP_ALIVE_TIMEOUT_MS = 200;
+
+  function startServer(): Promise<{ server: Server; port: number }> {
+    const server = createServer((req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("ok");
+    });
+    server.headersTimeout = HEADERS_TIMEOUT_MS;
+    server.requestTimeout = REQUEST_TIMEOUT_MS;
+    server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS;
+
+    return new Promise((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        const port = typeof address === "object" && address ? address.port : 0;
+        resolve({ server, port });
+      });
+    });
+  }
+
+  function stopServer(server: Server): Promise<void> {
+    return new Promise((resolve) => {
+      server.closeAllConnections?.();
+      server.close(() => resolve());
+    });
+  }
+
+  it("closes a stalled client that never finishes its headers", async () => {
+    const { server, port } = await startServer();
+    try {
+      const socket = connect(port, "127.0.0.1");
+      const closed = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("server did not close stalled connection")),
+          HEADERS_TIMEOUT_MS * 10
+        );
+        socket.on("close", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        socket.on("error", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+
+      await new Promise<void>((resolve) => socket.on("connect", () => resolve()));
+      // Send partial headers without the terminating blank line.
+      socket.write("GET / HTTP/1.1\r\nHost: localhost\r\n");
+
+      await closed;
+    } finally {
+      await stopServer(server);
+    }
+  });
+
+  it("still serves a normal request", async () => {
+    const { server, port } = await startServer();
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/`);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("ok");
+    } finally {
+      await stopServer(server);
+    }
+  });
+
+  it("closes idle keep-alive connections after keepAliveTimeout", async () => {
+    const { server, port } = await startServer();
+    try {
+      const socket: Socket = connect(port, "127.0.0.1");
+      const closed = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("server did not close idle keep-alive connection")),
+          KEEP_ALIVE_TIMEOUT_MS * 10
+        );
+        socket.on("close", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        socket.on("error", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+
+      await new Promise<void>((resolve) => socket.on("connect", () => resolve()));
+      socket.write("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n");
+
+      // Wait for the response, then leave the socket idle.
+      await new Promise<void>((resolve) => socket.once("data", () => resolve()));
+
+      await closed;
+    } finally {
+      await stopServer(server);
+    }
   });
 });
 

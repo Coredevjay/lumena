@@ -53,6 +53,13 @@ export const feeBumpRequestsTotal = new client.Counter({
   registers: [register],
 });
 
+export const feeSponsorResequenceTotal = new client.Counter({
+  name: "lumen_fee_sponsor_resequence_total",
+  help: "Total number of fee-sponsor resequence events (e.g. tx_bad_seq retries)",
+  labelNames: ["reason"],
+  registers: [register],
+});
+
 export const sponsorBalanceXlm = new client.Gauge({
   name: "lumen_sponsor_balance_xlm",
   help: "Current balance of fee sponsor account in XLM",

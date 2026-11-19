@@ -266,6 +266,38 @@ export interface ServerOpts {
    * Defaults to 15000.
    */
   shutdownGracePeriodMs?: number;
+  /**
+   * Maximum time (ms) the server waits to receive the complete request
+   * headers from a client before closing the connection. Protects against
+   * slowloris-style clients that trickle headers. Must be greater than
+   * `keepAliveTimeout` and less than `requestTimeout`.
+   * Defaults to `LUMEN_HTTP_HEADERS_TIMEOUT_MS` or 10000.
+   */
+  headersTimeout?: number;
+  /**
+   * Maximum time (ms) allowed for receiving the entire request (headers and
+   * body) before the connection is closed. Must be greater than
+   * `headersTimeout`.
+   * Defaults to `LUMEN_HTTP_REQUEST_TIMEOUT_MS` or 30000.
+   */
+  requestTimeout?: number;
+  /**
+   * Time (ms) an idle keep-alive connection is kept open before being
+   * closed. Must be less than `headersTimeout`.
+   * Defaults to `LUMEN_HTTP_KEEP_ALIVE_TIMEOUT_MS` or 5000.
+   */
+  keepAliveTimeout?: number;
+}
+
+/** Reads a positive integer timeout (ms) from an env var, falling back to a default. */
+function resolveTimeoutMs(value: number | undefined, envName: string, fallback: number): number {
+  const raw = value ?? process.env[envName];
+  if (raw === undefined || raw === "") return fallback;
+  const parsed = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`Invalid ${envName}: expected a positive number of milliseconds`);
+  }
+  return parsed;
 }
 
 /**
@@ -1357,6 +1389,37 @@ return 1
   app.use(errorHandler);
 
   const server = createHttpServer(app as unknown as RequestListener);
+
+  // #511 — slow-client protection. Bound header/request/keep-alive durations so
+  // a slowloris-style client cannot hold sockets open indefinitely.
+  const headersTimeout = resolveTimeoutMs(
+    opts.headersTimeout,
+    "LUMEN_HTTP_HEADERS_TIMEOUT_MS",
+    10_000,
+  );
+  const requestTimeout = resolveTimeoutMs(
+    opts.requestTimeout,
+    "LUMEN_HTTP_REQUEST_TIMEOUT_MS",
+    30_000,
+  );
+  const keepAliveTimeout = resolveTimeoutMs(
+    opts.keepAliveTimeout,
+    "LUMEN_HTTP_KEEP_ALIVE_TIMEOUT_MS",
+    5_000,
+  );
+  if (keepAliveTimeout >= headersTimeout) {
+    throw new Error(
+      `keepAliveTimeout (${keepAliveTimeout}ms) must be less than headersTimeout (${headersTimeout}ms)`,
+    );
+  }
+  if (requestTimeout <= headersTimeout) {
+    throw new Error(
+      `requestTimeout (${requestTimeout}ms) must be greater than headersTimeout (${headersTimeout}ms)`,
+    );
+  }
+  server.headersTimeout = headersTimeout;
+  server.requestTimeout = requestTimeout;
+  server.keepAliveTimeout = keepAliveTimeout;
 
   // Real-time audit stream consumed by `lumen audit --follow`.
   const auditWebSocketServer = new WebSocketServer({ noServer: true });

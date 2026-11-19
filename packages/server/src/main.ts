@@ -91,6 +91,13 @@ const serverResult = createServer({
   logLevel: config.logLevel,
   windowMs: config.rateLimit.windowMs,
   max: config.rateLimit.max,
+  // Slow-client / slowloris protection. These are applied to the underlying
+  // HTTP server (server.headersTimeout, server.requestTimeout,
+  // server.keepAliveTimeout) and are NOT reloadable via SIGHUP — changing them
+  // requires a restart.
+  httpHeadersTimeoutMs: config.httpHeadersTimeoutMs,
+  httpRequestTimeoutMs: config.httpRequestTimeoutMs,
+  httpKeepAliveTimeoutMs: config.httpKeepAliveTimeoutMs,
 });
 serverResult.sponsorMonitorService.start();
 
@@ -98,7 +105,9 @@ serverResult.sponsorMonitorService.start();
 // allowlist). Invalid configs are logged and the previous values are kept.
 // Reloadable: LOG_LEVEL, RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX, CORS_ORIGINS.
 // Not reloadable (require restart): PORT, API_KEY, signer/KMS settings,
-// STELLAR_NETWORK, HORIZON_URL, SOROBAN_RPC_URL.
+// STELLAR_NETWORK, HORIZON_URL, SOROBAN_RPC_URL, and the HTTP timeout settings
+// (LUMEN_HTTP_HEADERS_TIMEOUT_MS, LUMEN_HTTP_REQUEST_TIMEOUT_MS,
+// LUMEN_HTTP_KEEP_ALIVE_TIMEOUT_MS).
 registerReloadHandler({
   reload: () => serverResult.reloadConfig(),
 });

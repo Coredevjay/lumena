@@ -8,6 +8,8 @@
  * @see https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0038.md
  */
 
+import { withRetry, type RetryOptions } from '../../utils/retry.js';
+
 /**
  * A price entry returned by the SEP-0038 `/prices` endpoint.
  */
@@ -142,6 +144,8 @@ export interface Sep38ClientConfig {
   authToken?: string;
   /** Optional fetch implementation. Defaults to `globalThis.fetch`. */
   fetch?: typeof fetch;
+  /** Optional retry/backoff configuration applied to each request. */
+  retry?: RetryOptions;
 }
 
 /**
@@ -353,6 +357,7 @@ export class Sep38Client {
   private readonly baseUrl: string;
   private readonly authToken?: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly retry?: RetryOptions;
 
   constructor(config: Sep38ClientConfig) {
     if (!config || !config.baseUrl) {
@@ -361,6 +366,7 @@ export class Sep38Client {
     this.baseUrl = config.baseUrl.replace(/\/+$/, '');
     this.authToken = config.authToken;
     this.fetchImpl = config.fetch ?? globalThis.fetch;
+    this.retry = config.retry;
 
     if (typeof this.fetchImpl !== 'function') {
       throw new Sep38ValidationError(
@@ -373,11 +379,12 @@ export class Sep38Client {
    * Retrieves indicative prices for an asset pair.
    *
    * @param params - The price query parameters.
+   * @param signal - Optional AbortSignal to cancel the request.
    * @returns A list of prices for the asset pair.
    * @throws {Sep38ValidationError} If parameters are invalid.
    * @throws {Sep38RequestError} If the anchor returns an error response.
    */
-  async getPrices(params: Sep38PricesParams): Promise<Sep38Price[]> {
+  async getPrices(params: Sep38PricesParams, signal?: AbortSignal): Promise<Sep38Price[]> {
     if (!params) {
       throw new Sep38ValidationError('Missing required parameter: params');
     }
@@ -416,6 +423,8 @@ export class Sep38Client {
     const response = await this.request<{ buy_assets: Sep38Price[] }>(
       'GET',
       `/sep38/prices?${query.toString()}`,
+      undefined,
+      signal,
     );
 
     return response.buy_assets ?? [];
@@ -425,11 +434,12 @@ export class Sep38Client {
    * Retrieves a previously created firm quote by its identifier.
    *
    * @param id - The quote identifier.
+   * @param signal - Optional AbortSignal to cancel the request.
    * @returns The firm quote.
    * @throws {Sep38ValidationError} If the identifier is invalid.
    * @throws {Sep38RequestError} If the anchor returns an error response.
    */
-  async getQuote(id: string): Promise<Sep38FirmQuote> {
+  async getQuote(id: string, signal?: AbortSignal): Promise<Sep38FirmQuote> {
     if (id === undefined || id === null || id === '') {
       throw new Sep38ValidationError('Missing required parameter: id');
     }
@@ -440,6 +450,8 @@ export class Sep38Client {
     return this.request<Sep38FirmQuote>(
       'GET',
       `/sep38/quote/${encodeURIComponent(id)}`,
+      undefined,
+      signal,
     );
   }
 
@@ -447,11 +459,12 @@ export class Sep38Client {
    * Requests a firm quote for an asset pair.
    *
    * @param request - The quote request parameters.
+   * @param signal - Optional AbortSignal to cancel the request.
    * @returns The firm quote.
    * @throws {Sep38ValidationError} If parameters are invalid.
    * @throws {Sep38RequestError} If the anchor returns an error response.
    */
-  async postQuote(request: Sep38QuoteRequest): Promise<Sep38FirmQuote> {
+  async postQuote(request: Sep38QuoteRequest, signal?: AbortSignal): Promise<Sep38FirmQuote> {
     if (!request) {
       throw new Sep38ValidationError('Missing required parameter: request');
     }
@@ -498,7 +511,7 @@ export class Sep38Client {
       body.buy_delivery_method = request.buy_delivery_method;
     }
 
-    return this.request<Sep38FirmQuote>('POST', '/sep38/quote', body);
+    return this.request<Sep38FirmQuote>('POST', '/sep38/quote', body, signal);
   }
 
   /**
@@ -508,6 +521,7 @@ export class Sep38Client {
     method: 'GET' | 'POST',
     path: string,
     body?: unknown,
+    signal?: AbortSignal,
   ): Promise<T> {
     const headers: Record<string, string> = {
       Accept: 'application/json',
@@ -523,43 +537,52 @@ export class Sep38Client {
 
     const url = `${this.baseUrl}${path}`;
 
-    let response: Response;
-    try {
-      response = await this.fetchImpl(url, {
-        method,
-        headers,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Sep38RequestError(
-        `Network error while calling ${method} ${url}: ${message}`,
-        0,
-      );
-    }
+    return withRetry(
+      async () => {
+        let response: Response;
+        try {
+          response = await this.fetchImpl(url, {
+            method,
+            headers,
+            body: body !== undefined ? JSON.stringify(body) : undefined,
+            signal,
+          });
+        } catch (err) {
+          if (signal?.aborted) {
+            throw err;
+          }
+          const message = err instanceof Error ? err.message : String(err);
+          throw new Sep38RequestError(
+            `Network error while calling ${method} ${url}: ${message}`,
+            0,
+          );
+        }
 
-    let parsed: unknown;
-    const text = await response.text();
-    if (text) {
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        parsed = text;
-      }
-    }
+        let parsed: unknown;
+        const text = await response.text();
+        if (text) {
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+            parsed = text;
+          }
+        }
 
-    if (!response.ok) {
-      const errorMessage =
-        parsed && typeof parsed === 'object' && 'error' in parsed
-          ? String((parsed as { error: unknown }).error)
-          : `Request failed with status ${response.status}`;
-      throw new Sep38RequestError(
-        `${method} ${url} failed: ${errorMessage}`,
-        response.status,
-        parsed,
-      );
-    }
+        if (!response.ok) {
+          const errorMessage =
+            parsed && typeof parsed === 'object' && 'error' in parsed
+              ? String((parsed as { error: unknown }).error)
+              : `Request failed with status ${response.status}`;
+          throw new Sep38RequestError(
+            `${method} ${url} failed: ${errorMessage}`,
+            response.status,
+            parsed,
+          );
+        }
 
-    return parsed as T;
+        return parsed as T;
+      },
+      { ...this.retry, signal },
+    );
   }
 }

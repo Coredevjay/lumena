@@ -3,6 +3,7 @@ import type { StellarConfig, StellarNetwork } from "@lumen/types";
 import { FUTURENET, LOCAL, PUBLIC, TESTNET, resolveNetwork } from "../networks.js";
 import { SequenceNumberCache } from "./sequence-number-cache";
 import { crypto } from "../crypto";
+import { NetworkError } from "../errors.js";
 
 type HorizonServer = InstanceType<typeof Horizon.Server>;
 type RpcServer = InstanceType<typeof sorobanRpc.Server>;
@@ -179,7 +180,15 @@ export class StellarClient {
     const cached = this.sequenceCache?.get(accountId);
     if (cached !== null && cached !== undefined) return cached;
 
-    const account = await this.horizon.loadAccount(accountId);
+    let account: Awaited<ReturnType<HorizonServer["loadAccount"]>>;
+    try {
+      account = await this.horizon.loadAccount(accountId);
+    } catch (err) {
+      throw new NetworkError(
+        `Failed to load account ${accountId} from Horizon`,
+        { cause: err },
+      );
+    }
     const sequence = account.sequenceNumber();
     this.sequenceCache?.set(accountId, sequence);
     return sequence;

@@ -22,29 +22,68 @@ export interface EndpointStatus {
   totalFailures: number;
 }
 
+export type StellarNetworkName = 'mainnet' | 'testnet' | 'futurenet';
+
+/**
+ * Per-tenant network configuration. Allows a single server instance to serve
+ * tenants on different Stellar networks by resolving horizon/rpc/passphrase
+ * (and optionally sponsor) per tenant/API key.
+ */
+export interface StellarNetworkConfig {
+  network: StellarNetworkName;
+  horizonUrl: string;
+  rpcUrl: string;
+  networkPassphrase: string;
+  sponsor?: string;
+}
+
 export interface FailoverStellarClientOptions {
   endpoints?: StellarEndpoint[];
-  network?: 'mainnet' | 'testnet' | 'futurenet';
+  network?: StellarNetworkName;
+  /** Explicit per-tenant network config; takes precedence over `network`. */
+  networkConfig?: StellarNetworkConfig;
   probeIntervalMs?: number;
   probeTimeoutMs?: number;
   maxRetries?: number;
   fetchImpl?: typeof fetch;
 }
 
-const NETWORK_PRESETS: Record<string, StellarEndpoint[]> = {
-  mainnet: [
-    { url: PUBLIC.horizonUrl, kind: 'horizon', region: 'global' },
-    { url: PUBLIC.rpcUrl, kind: 'soroban', region: 'global' },
-  ],
-  testnet: [
-    { url: TESTNET.horizonUrl, kind: 'horizon', region: 'global' },
-    { url: TESTNET.rpcUrl, kind: 'soroban', region: 'global' },
-  ],
-  futurenet: [
-    { url: FUTURENET.horizonUrl, kind: 'horizon', region: 'global' },
-    { url: FUTURENET.rpcUrl, kind: 'soroban', region: 'global' },
-  ],
+export const NETWORK_PRESETS: Record<StellarNetworkName, StellarNetworkConfig> = {
+  mainnet: {
+    network: 'mainnet',
+    horizonUrl: PUBLIC.horizonUrl,
+    rpcUrl: PUBLIC.rpcUrl,
+    networkPassphrase: PUBLIC.networkPassphrase,
+  },
+  testnet: {
+    network: 'testnet',
+    horizonUrl: TESTNET.horizonUrl,
+    rpcUrl: TESTNET.rpcUrl,
+    networkPassphrase: TESTNET.networkPassphrase,
+  },
+  futurenet: {
+    network: 'futurenet',
+    horizonUrl: FUTURENET.horizonUrl,
+    rpcUrl: FUTURENET.rpcUrl,
+    networkPassphrase: FUTURENET.networkPassphrase,
+  },
 };
+
+/** Resolve a network config by name, falling back to testnet. */
+export function resolveNetworkConfig(
+  network?: StellarNetworkName | StellarNetworkConfig,
+): StellarNetworkConfig {
+  if (network && typeof network === 'object') return network;
+  return NETWORK_PRESETS[network ?? 'testnet'] ?? NETWORK_PRESETS.testnet;
+}
+
+/** Build endpoint list from a per-tenant network config. */
+export function endpointsFromNetworkConfig(config: StellarNetworkConfig): StellarEndpoint[] {
+  return [
+    { url: config.horizonUrl, kind: 'horizon', region: 'global' },
+    { url: config.rpcUrl, kind: 'soroban', region: 'global' },
+  ];
+}
 
 const DEFAULT_PROBE_INTERVAL_MS = 15_000;
 const DEFAULT_PROBE_TIMEOUT_MS = 5_000;
@@ -75,14 +114,16 @@ export class FailoverStellarClient {
   private readonly probeTimeoutMs: number;
   private readonly maxRetries: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly networkConfig: StellarNetworkConfig;
   private timer: ReturnType<typeof setInterval> | null = null;
   private probing = false;
 
   constructor(opts: FailoverStellarClientOptions = {}) {
+    this.networkConfig = resolveNetworkConfig(opts.networkConfig ?? opts.network);
     const endpoints =
       opts.endpoints && opts.endpoints.length > 0
         ? opts.endpoints
-        : NETWORK_PRESETS[opts.network ?? 'testnet'] ?? NETWORK_PRESETS.testnet;
+        : endpointsFromNetworkConfig(this.networkConfig);
 
     this.states = endpoints.map((endpoint) => ({
       endpoint,
@@ -112,6 +153,7 @@ export class FailoverStellarClient {
       (this.timer as { unref?: () => void }).unref?.();
     }
     logger.info('FailoverStellarClient started', {
+      network: this.networkConfig.network,
       endpoints: this.states.length,
       probeIntervalMs: this.probeIntervalMs,
     });
@@ -123,6 +165,11 @@ export class FailoverStellarClient {
       this.timer = null;
     }
     logger.info('FailoverStellarClient stopped');
+  }
+
+  /** The per-tenant network config this client is scoped to. */
+  getNetworkConfig(): StellarNetworkConfig {
+    return this.networkConfig;
   }
 
   getEndpointStatus(): EndpointStatus[] {

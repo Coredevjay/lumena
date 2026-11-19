@@ -609,10 +609,142 @@ export const openApiSpec = {
         },
       },
     },
+    "/policy/import": {
+      post: {
+        summary: "Import Wallet Policy",
+        description:
+          "Imports a wallet policy from a JSON document previously produced by the export endpoint. " +
+          "The imported rules are validated against the rule schemas before being applied.",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  walletId: {
+                    type: "string",
+                    description: "Stellar public key address of the wallet to import the policy for.",
+                    example: "GAD7654...",
+                  },
+                  rules: {
+                    type: "array",
+                    description: "Policy rules to validate and apply.",
+                    items: { type: "object" },
+                  },
+                },
+                required: ["walletId", "rules"],
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Policy imported successfully",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/Policy" },
+              },
+            },
+          },
+          "400": { description: "Invalid or unparseable policy document" },
+          "401": { description: "Missing or invalid tenant API key" },
+          "422": { description: "Policy rules failed schema validation" },
+          "429": { $ref: "#/components/responses/QuotaExceeded" },
+        },
+      },
+    },
+    "/policy/templates": {
+      get: {
+        summary: "List Policy Templates",
+        description:
+          "Returns the built-in named policy templates (e.g. conservative, payroll, dapp-session) that can be applied to a wallet.",
+        responses: {
+          "200": {
+            description: "List of available policy templates",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    templates: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          name: { type: "string", example: "conservative" },
+                          description: { type: "string" },
+                          rules: { type: "array", items: { type: "object" } },
+                        },
+                        required: ["name", "rules"],
+                      },
+                    },
+                  },
+                  required: ["templates"],
+                },
+              },
+            },
+          },
+          "401": { description: "Missing or invalid tenant API key" },
+          "429": { $ref: "#/components/responses/QuotaExceeded" },
+        },
+      },
+    },
+    "/policy/templates/{name}/apply": {
+      post: {
+        summary: "Apply Policy Template",
+        description:
+          "Applies a named policy template to a wallet, creating or replacing its policy. " +
+          "Template rules are validated against the rule schemas before being applied.",
+        parameters: [
+          {
+            name: "name",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+            description: "Template name (e.g. conservative, payroll, dapp-session).",
+            example: "conservative",
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  walletId: {
+                    type: "string",
+                    description: "Stellar public key address of the wallet to apply the template to.",
+                    example: "GAD7654...",
+                  },
+                },
+                required: ["walletId"],
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Template applied successfully",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/Policy" },
+              },
+            },
+          },
+          "400": { description: "Invalid request validation error" },
+          "401": { description: "Missing or invalid tenant API key" },
+          "404": { description: "Template not found" },
+          "429": { $ref: "#/components/responses/QuotaExceeded" },
+        },
+      },
+    },
     "/policy/{walletId}": {
       put: {
         summary: "Update Wallet Policy",
-        description: "Replaces the rules of an existing wallet policy.",
+        description:
+          "Replaces the rules of an existing wallet policy. Each update creates an immutable policy version.",
         parameters: [
           {
             name: "walletId",
@@ -707,6 +839,192 @@ export const openApiSpec = {
           "204": { description: "Policy deleted successfully" },
           "401": { description: "Missing or invalid tenant API key" },
           "404": { description: "No policy found for wallet" },
+          "429": { $ref: "#/components/responses/QuotaExceeded" },
+        },
+      },
+    },
+    "/policy/{walletId}/evaluate": {
+      post: {
+        summary: "Evaluate Transaction Against Policy (Dry Run)",
+        description:
+          "Evaluates a transaction envelope XDR against the stored policy for a wallet and returns the decision " +
+          "and matched rule results without co-signing or recording velocity. This endpoint performs no state mutation.",
+        parameters: [
+          {
+            name: "walletId",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+            description: "Stellar public key address of the wallet.",
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  xdr: {
+                    type: "string",
+                    description: "Base64 encoded Stellar transaction envelope XDR to evaluate.",
+                    example: "AAAAAG...",
+                  },
+                },
+                required: ["xdr"],
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Evaluation result (no cosigning or state mutation performed)",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    approved: {
+                      type: "boolean",
+                      description: "Whether the transaction would be approved by the policy.",
+                      example: true,
+                    },
+                    reason: {
+                      type: "string",
+                      description: "Human-readable explanation of the decision.",
+                      example: "Transaction approved by policy rules",
+                    },
+                    results: {
+                      type: "array",
+                      description: "Per-rule evaluation results.",
+                      items: { $ref: "#/components/schemas/RuleEvaluationResult" },
+                    },
+                  },
+                  required: ["approved", "results"],
+                },
+              },
+            },
+          },
+          "400": { description: "Invalid request or malformed XDR" },
+          "401": { description: "Missing or invalid tenant API key" },
+          "404": { description: "No policy found for wallet" },
+          "429": { $ref: "#/components/responses/QuotaExceeded" },
+        },
+      },
+    },
+    "/policy/{walletId}/export": {
+      get: {
+        summary: "Export Wallet Policy",
+        description:
+          "Exports the wallet policy as a JSON document that can be re-imported via POST /policy/import.",
+        parameters: [
+          {
+            name: "walletId",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+            description: "Stellar public key address of the wallet.",
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Exported policy document",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    walletId: { type: "string", example: "GAD7654..." },
+                    rules: { type: "array", items: { type: "object" } },
+                    exportedAt: { type: "string", format: "date-time" },
+                  },
+                  required: ["walletId", "rules"],
+                },
+              },
+            },
+          },
+          "401": { description: "Missing or invalid tenant API key" },
+          "404": { description: "No policy found for wallet" },
+          "429": { $ref: "#/components/responses/QuotaExceeded" },
+        },
+      },
+    },
+    "/policy/{id}/versions": {
+      get: {
+        summary: "List Policy Versions",
+        description:
+          "Returns the immutable version history for a policy, including the author and timestamp of each change.",
+        parameters: [
+          {
+            name: "id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+            description: "Policy ID.",
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Policy version history",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "array",
+                  items: { $ref: "#/components/schemas/PolicyVersion" },
+                },
+              },
+            },
+          },
+          "401": { description: "Missing or invalid tenant API key" },
+          "404": { description: "Policy not found" },
+          "429": { $ref: "#/components/responses/QuotaExceeded" },
+        },
+      },
+    },
+    "/policy/{id}/rollback": {
+      post: {
+        summary: "Rollback Policy to Version",
+        description:
+          "Rolls back a policy to a previously stored immutable version. The rollback itself creates a new version.",
+        parameters: [
+          {
+            name: "id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+            description: "Policy ID.",
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  version: {
+                    type: "integer",
+                    description: "Version number to roll back to.",
+                    example: 2,
+                  },
+                },
+                required: ["version"],
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Policy rolled back successfully",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/Policy" },
+              },
+            },
+          },
+          "400": { description: "Invalid request validation error" },
+          "401": { description: "Missing or invalid tenant API key" },
+          "404": { description: "Policy or version not found" },
           "429": { $ref: "#/components/responses/QuotaExceeded" },
         },
       },
@@ -908,293 +1226,4 @@ export const openApiSpec = {
             description: "Webhook ID.",
           },
           {
-            name: "status",
-            in: "query",
-            required: false,
-            schema: {
-              type: "string",
-              enum: ["pending", "delivered", "failed", "dlq"],
-            },
-            description: "Filter deliveries by status.",
-          },
-          {
-            name: "limit",
-            in: "query",
-            required: false,
-            schema: { type: "integer", minimum: 1, maximum: 200, default: 50 },
-            description: "Maximum number of deliveries to return.",
-          },
-          {
-            name: "offset",
-            in: "query",
-            required: false,
-            schema: { type: "integer", minimum: 0, default: 0 },
-            description: "Number of deliveries to skip for pagination.",
-          },
-        ],
-        responses: {
-          "200": {
-            description: "Webhook delivery history",
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  properties: {
-                    deliveries: {
-                      type: "array",
-                      items: { $ref: "#/components/schemas/WebhookDelivery" },
-                    },
-                    total: { type: "integer", example: 12 },
-                  },
-                  required: ["deliveries", "total"],
-                },
-              },
-            },
-          },
-          "401": { description: "Missing or invalid tenant API key" },
-          "404": { description: "Webhook not found" },
-          "429": { $ref: "#/components/responses/QuotaExceeded" },
-        },
-      },
-    },
-    "/webhooks/deliveries/{id}/retry": {
-      post: {
-        summary: "Retry Webhook Delivery",
-        description:
-          "Re-enqueues a failed or dead-lettered webhook delivery for another attempt using the standard retry pipeline.",
-        parameters: [
-          {
-            name: "id",
-            in: "path",
-            required: true,
-            schema: { type: "string" },
-            description: "Delivery ID.",
-          },
-        ],
-        responses: {
-          "200": {
-            description: "Delivery re-enqueued for retry",
-            content: {
-              "application/json": {
-                schema: { $ref: "#/components/schemas/WebhookDelivery" },
-              },
-            },
-          },
-          "401": { description: "Missing or invalid tenant API key" },
-          "404": { description: "Delivery not found" },
-          "409": { description: "Delivery is not in a retryable state" },
-          "429": { $ref: "#/components/responses/QuotaExceeded" },
-        },
-      },
-    },
-  },
-  components: {
-    securitySchemes: {
-      bearerAuth: {
-        type: "http",
-        scheme: "bearer",
-        bearerFormat: "API Key",
-        description: "Tenant API key passed in the Authorization: Bearer <api-key> header",
-      },
-    },
-    responses: {
-      QuotaExceeded: {
-        description:
-          "Tenant has exceeded its monthly gas quota. Rate limit headers describe the current quota window.",
-        headers: {
-          "X-RateLimit-Limit": {
-            description: "Monthly gas quota for the tenant, in XLM.",
-            schema: { type: "string", example: "100" },
-          },
-          "X-RateLimit-Remaining": {
-            description: "Remaining gas quota for the current period, in XLM.",
-            schema: { type: "string", example: "0" },
-          },
-          "X-RateLimit-Reset": {
-            description: "Unix timestamp (seconds) when the quota window resets.",
-            schema: { type: "string", example: "1735689600" },
-          },
-          "Retry-After": {
-            description: "Seconds until the quota window resets.",
-            schema: { type: "string", example: "3600" },
-          },
-        },
-        content: {
-          "application/json": {
-            schema: {
-              type: "object",
-              properties: {
-                error: { type: "string", example: "Monthly gas quota exceeded" },
-                code: { type: "string", example: "QUOTA_EXCEEDED" },
-                tier: { type: "string", example: "free" },
-                monthlyGasQuotaXlm: { type: "string", example: "100" },
-                usedGasXlm: { type: "string", example: "100.5" },
-                resetsAt: { type: "string", format: "date-time" },
-              },
-              required: ["error", "code"],
-            },
-          },
-        },
-      },
-    },
-    schemas: {
-      SpendLimitRule: {
-        type: "object",
-        properties: {
-          type: { type: "string", enum: ["spend_limit"] },
-          asset: { type: "string", example: "USDC" },
-          maxPerTx: { type: "string", example: "100.0" },
-          maxDaily: { type: "string", example: "500.0" },
-        },
-        required: ["type", "asset", "maxPerTx", "maxDaily"],
-      },
-      VelocityRule: {
-        type: "object",
-        properties: {
-          type: { type: "string", enum: ["velocity"] },
-          maxTransactions: { type: "integer", example: 10 },
-          windowMinutes: { type: "integer", example: 60 },
-        },
-        required: ["type", "maxTransactions", "windowMinutes"],
-      },
-      AllowlistRule: {
-        type: "object",
-        properties: {
-          type: { type: "string", enum: ["allowlist"] },
-          destinations: {
-            type: "array",
-            items: { type: "string" },
-            example: ["GCB2..."],
-          },
-        },
-        required: ["type", "destinations"],
-      },
-      BlocklistRule: {
-        type: "object",
-        properties: {
-          type: { type: "string", enum: ["blocklist"] },
-          destinations: {
-            type: "array",
-            items: { type: "string" },
-            example: ["GBAD..."],
-          },
-        },
-        required: ["type", "destinations"],
-      },
-      AssetAllowlistRule: {
-        type: "object",
-        properties: {
-          type: { type: "string", enum: ["asset_allowlist"] },
-          assets: {
-            type: "array",
-            items: { type: "string" },
-            example: ["native", "USDC:GISSUER..."],
-          },
-        },
-        required: ["type", "assets"],
-      },
-      MaxOperationsRule: {
-        type: "object",
-        properties: {
-          type: { type: "string", enum: ["max_operations"] },
-          maxOperations: { type: "integer", example: 5 },
-        },
-        required: ["type", "maxOperations"],
-      },
-      ContractAllowlistRule: {
-        type: "object",
-        description:
-          "Restricts Soroban smart contract invocations to an explicit allowlist of contract IDs and optional method names.",
-        properties: {
-          type: { type: "string", enum: ["contract_allowlist"] },
-          allowedContracts: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                contractId: {
-                  type: "string",
-                  description: "The Soroban contract address.",
-                  example: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-                },
-                methods: {
-                  type: "array",
-                  items: { type: "string" },
-                  description:
-                    "Allowed method names. If omitted or empty, all methods are allowed.",
-                  example: ["transfer", "approve"],
-                },
-              },
-              required: ["contractId"],
-            },
-            minItems: 1,
-          },
-        },
-        required: ["type", "allowedContracts"],
-      },
-      Policy: {
-        type: "object",
-        properties: {
-          id: { type: "string", example: "550e8400-e29b-41d4-a716-446655440000" },
-          walletId: { type: "string", example: "GAD7654..." },
-          rules: { type: "array", items: { type: "object" } },
-          createdAt: { type: "string", format: "date-time" },
-        },
-        required: ["id", "walletId", "rules"],
-      },
-      WebhookConfig: {
-        type: "object",
-        description: "Registered webhook configuration (secret is never returned).",
-        properties: {
-          id: { type: "string", example: "550e8400-e29b-41d4-a716-446655440000" },
-          url: { type: "string", format: "uri", example: "https://example.com/webhook" },
-          events: {
-            type: "array",
-            items: { type: "string" },
-            example: ["transaction.cosigned", "wallet.created"],
-          },
-          enabled: { type: "boolean", example: true },
-        },
-        required: ["id", "url", "events"],
-      },
-      WebhookRequest: {
-        type: "object",
-        properties: {
-          id: { type: "string", description: "Optional custom ID; auto-generated if omitted." },
-          url: { type: "string", format: "uri", example: "https://example.com/webhook" },
-          secret: {
-            type: "string",
-            description: "HMAC-SHA256 signing secret used to verify delivery signatures.",
-            example: "s3cr3t",
-          },
-          events: {
-            type: "array",
-            items: { type: "string" },
-            example: ["transaction.cosigned"],
-          },
-          enabled: { type: "boolean", default: true },
-        },
-        required: ["url", "secret", "events"],
-      },
-      WebhookDelivery: {
-        type: "object",
-        description:
-          "A single webhook delivery attempt record, including retry state and DLQ routing.",
-        properties: {
-          id: { type: "string", example: "550e8400-e29b-41d4-a716-446655440000" },
-          webhookId: { type: "string", example: "550e8400-e29b-41d4-a716-446655440000" },
-          event: { type: "string", example: "transaction.cosigned" },
-          attempt: { type: "integer", example: 1 },
-          success: { type: "boolean", example: true },
-          statusCode: { type: "integer", example: 200 },
-          error: { type: "string", example: "HTTP 500: Internal Server Error" },
-          timestamp: { type: "string", format: "date-time" },
-          deliveredAt: { type: "string", format: "date-time" },
-          deadLettered: { type: "boolean", description: "True once routed to the dead-letter queue." },
-        },
-        required: ["id", "webhookId", "event", "attempt", "success", "timestamp"],
-      },
-    },
-  },
-  security: [{ bearerAuth: [] }],
-} as const;
+            name:

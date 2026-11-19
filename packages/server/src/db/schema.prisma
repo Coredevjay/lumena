@@ -44,12 +44,30 @@ model Policy {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  wallet Wallet       @relation(fields: [walletId], references: [id], onDelete: Cascade)
-  rules  PolicyRule[]
+  wallet   Wallet          @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  rules    PolicyRule[]
+  versions PolicyVersion[]
 
   @@index([walletId])
   @@index([enabled])
   @@map("policies")
+}
+
+/// An immutable snapshot of a policy at a given version, used for auditing
+/// and rollback of policy changes.
+model PolicyVersion {
+  id        String   @id @default(uuid())
+  policyId  String
+  version   Int
+  author    String
+  rules     Json
+  createdAt DateTime @default(now())
+
+  policy Policy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@unique([policyId, version])
+  @@index([policyId])
+  @@map("policy_versions")
 }
 
 /// An individual rule belonging to a policy.

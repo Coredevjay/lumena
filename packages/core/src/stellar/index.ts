@@ -1,7 +1,6 @@
 import {
   Horizon,
   Keypair,
-  Networks,
   TransactionBuilder,
   Account,
   Operation,
@@ -9,6 +8,8 @@ import {
   Memo,
   BASE_FEE,
 } from '@stellar/stellar-sdk';
+
+import { TESTNET } from '../networks.js';
 
 export interface SequenceNumberCacheOptions {
   /**
@@ -98,7 +99,7 @@ export class StellarClient {
   private readonly sequenceCache?: SequenceNumberCache;
 
   constructor(
-    horizonUrl: string = 'https://horizon-testnet.stellar.org',
+    horizonUrl: string = TESTNET.horizonUrl,
     options: StellarClientOptions = {},
   ) {
     this.horizon = new Horizon.Server(horizonUrl);
@@ -133,7 +134,7 @@ export class StellarClient {
     const builder = new TransactionBuilder(account, {
       fee: options.fee ?? BASE_FEE,
       memo: options.memo,
-      networkPassphrase: options.networkPassphrase ?? Networks.TESTNET,
+      networkPassphrase: options.networkPassphrase ?? TESTNET.networkPassphrase,
     });
 
     for (const operation of operations) {

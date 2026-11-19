@@ -22,6 +22,9 @@ export type { KeystoreEnvelope };
 export {
   KEYSTORE_VERSION,
   DEFAULT_ARGON2ID_PARAMS,
+  KDF_FLOOR,
+  validateKdfParams,
+  upgradeKeystore,
   parseKeystoreEnvelope,
   encryptKeystore,
   decryptKeystore,

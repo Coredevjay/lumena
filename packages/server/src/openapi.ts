@@ -17,7 +17,10 @@ export const openApiSpec = {
       get: {
         summary: "Health Check",
         description:
-          "Returns the operational status of the server and the configured Stellar network.",
+          "Public, minimal liveness probe. Returns only the overall status and never exposes " +
+          "hostnames, dependency versions, or error details. Use GET /health/details for the " +
+          "authenticated detailed view.",
+        security: [],
         responses: {
           "200": {
             description: "Server is healthy",
@@ -27,13 +30,64 @@ export const openApiSpec = {
                   type: "object",
                   properties: {
                     status: { type: "string", example: "ok" },
-                    network: { type: "string", example: "testnet" },
                   },
-                  required: ["status", "network"],
+                  required: ["status"],
                 },
               },
             },
           },
+        },
+      },
+    },
+    "/health/details": {
+      get: {
+        summary: "Detailed Health Check",
+        description:
+          "Returns per-dependency health information (database, Horizon, Redis, etc.). " +
+          "Requires admin authentication; non-admin callers receive 403. " +
+          "The public /health endpoint intentionally omits this information.",
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "200": {
+            description: "Detailed dependency health",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    status: { type: "string", example: "ok" },
+                    dependencies: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          name: { type: "string", example: "database" },
+                          status: {
+                            type: "string",
+                            enum: ["ok", "degraded", "down"],
+                            example: "ok",
+                          },
+                          latencyMs: { type: "integer", example: 3 },
+                          error: {
+                            type: "string",
+                            nullable: true,
+                            description: "Error message when the dependency is not healthy.",
+                          },
+                        },
+                        required: ["name", "status"],
+                      },
+                    },
+                    uptimeSeconds: { type: "integer", example: 3600 },
+                    version: { type: "string", example: "0.1.0" },
+                  },
+                  required: ["status", "dependencies"],
+                },
+              },
+            },
+          },
+          "401": { description: "Missing or invalid tenant API key" },
+          "403": { description: "Caller is not an admin" },
+          "429": { $ref: "#/components/responses/QuotaExceeded" },
         },
       },
     },
@@ -360,7 +414,7 @@ export const openApiSpec = {
       get: {
         summary: "List Registered Wallets",
         description:
-          "Returns all wallet addresses registered in the WalletRegistry. Protected by API key authentication. Supports pagination via limit and offset query parameters.",
+          "Returns all wallet addresses registered in the WalletRegistry. Protected by API key authentication. Supports pagination via limit and offset query parameters and filtering by tag.",
         security: [{ bearerAuth: [] }],
         parameters: [
           {
@@ -376,6 +430,15 @@ export const openApiSpec = {
             required: false,
             schema: { type: "integer", minimum: 0, default: 0 },
             description: "Number of wallets to skip for pagination.",
+          },
+          {
+            name: "tag",
+            in: "query",
+            required: false,
+            schema: { type: "string", maxLength: 64 },
+            description:
+              "Return only wallets carrying this tag. Matching is exact and case-sensitive.",
+            example: "treasury",
           },
         ],
         responses: {
@@ -398,7 +461,55 @@ export const openApiSpec = {
               },
             },
           },
+          "400": { description: "Invalid pagination or tag parameter" },
           "401": { description: "Missing or invalid tenant API key" },
+          "429": { $ref: "#/components/responses/QuotaExceeded" },
+        },
+      },
+    },
+    "/wallets/{address}": {
+      patch: {
+        summary: "Update Wallet Metadata",
+        description:
+          "Partially updates operator metadata for a registered wallet: a human-readable label, " +
+          "a set of tags used for fleet management and filtering, and a free-form metadata object. " +
+          "Requires admin RBAC. At least one field must be provided. " +
+          "Size limits are enforced: label ≤ 128 characters, at most 32 tags of ≤ 64 characters each, " +
+          "and metadata serialized as JSON ≤ 4096 bytes. Exceeding any limit returns 400.",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: "address",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+            description: "Stellar public key address of the wallet.",
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/WalletPatch" },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Wallet metadata updated",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/WalletMetadata" },
+              },
+            },
+          },
+          "400": {
+            description:
+              "Invalid patch payload or size limit exceeded (label, tags, or metadata)",
+          },
+          "401": { description: "Missing or invalid tenant API key" },
+          "403": { description: "Caller is not an admin" },
+          "404": { description: "Wallet not found" },
           "429": { $ref: "#/components/responses/QuotaExceeded" },
         },
       },

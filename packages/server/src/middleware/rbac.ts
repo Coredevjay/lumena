@@ -34,7 +34,9 @@ export type PermissionAction =
   | 'read'
   | 'policy:update'
   | 'webhooks:update'
+  | 'webhooks:replay'
   | 'wallets:read'
+  | 'wallets:update'
   | 'audit:read'
   | 'admin';
 
@@ -46,8 +48,17 @@ const VALID_ROLES: Role[] = ['admin', 'operator', 'auditor'];
  */
 export const ROLE_PERMISSIONS: Record<Role, PermissionAction[]> = {
   auditor: ['read', 'wallets:read', 'audit:read'],
-  operator: ['read', 'wallets:read', 'policy:update', 'audit:read'],
-  admin: ['read', 'wallets:read', 'policy:update', 'webhooks:update', 'admin', 'audit:read'],
+  operator: ['read', 'wallets:read', 'wallets:update', 'policy:update', 'audit:read'],
+  admin: [
+    'read',
+    'wallets:read',
+    'wallets:update',
+    'policy:update',
+    'webhooks:update',
+    'webhooks:replay',
+    'admin',
+    'audit:read',
+  ],
 };
 
 /**
@@ -69,7 +80,18 @@ export function resolveAction(method: string, path: string): PermissionAction {
   }
 
   if (normalizedPath.startsWith('/webhooks')) {
+    // DLQ replay is a privileged, side-effecting operation (re-signs and
+    // re-delivers a webhook), so it is restricted to admins.
+    if (upperMethod === 'POST' && /^\/webhooks\/dlq\/[^/]+\/replay$/.test(normalizedPath)) {
+      return 'webhooks:replay';
+    }
     return 'webhooks:update';
+  }
+
+  if (normalizedPath.startsWith('/wallets')) {
+    // Wallet metadata edits (label, tags, metadata) are allowed for
+    // operators and admins.
+    return 'wallets:update';
   }
 
   // Any other mutating route requires full admin access.

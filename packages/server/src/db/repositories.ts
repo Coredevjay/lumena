@@ -89,6 +89,8 @@ interface PrismaWalletRow {
   address: string;
   label: string | null;
   network: string;
+  tags?: string[] | null;
+  metadata?: unknown;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -134,6 +136,8 @@ interface PrismaWebhookDeliveryRow {
   lastError: string | null;
   nextRetryAt: Date | null;
   deadLetteredAt: Date | null;
+  replayCount?: number | null;
+  replayedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -180,6 +184,11 @@ function mapWalletRowToWallet(row: PrismaWalletRow): Wallet {
     address: row.address,
     label: row.label ?? undefined,
     network: row.network,
+    tags: Array.isArray(row.tags) ? (row.tags as string[]) : [],
+    metadata:
+      row.metadata && typeof row.metadata === 'object'
+        ? (row.metadata as Record<string, unknown>)
+        : undefined,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -235,6 +244,8 @@ function mapWebhookDeliveryRowToDelivery(row: PrismaWebhookDeliveryRow): Webhook
     lastError: row.lastError ?? undefined,
     nextRetryAt: row.nextRetryAt ? row.nextRetryAt.toISOString() : undefined,
     deadLetteredAt: row.deadLetteredAt ? row.deadLetteredAt.toISOString() : undefined,
+    replayCount: row.replayCount ?? 0,
+    replayedAt: row.replayedAt ? row.replayedAt.toISOString() : undefined,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -505,6 +516,32 @@ export class PrismaWalletRegistry implements WalletRegistry {
     return rows.map((row) => mapWalletRowToWallet(row as unknown as PrismaWalletRow));
   }
 
+  /**
+   * Updates operator-managed wallet metadata (label, tags, metadata).
+   * Throws if the wallet does not exist.
+   */
+  async updateWalletMetadata(
+    address: string,
+    patch: { label?: string | null; tags?: string[]; metadata?: Record<string, unknown> | null },
+  ): Promise<Wallet> {
+    const existing = await this.prisma.wallet.findUnique({ where: { address } });
+    if (!existing) {
+      throw new Error(`Wallet not found: ${address}`);
+    }
+
+    const row = await this.prisma.wallet.update({
+      where: { address },
+      data: {
+        ...(patch.label !== undefined ? { label: patch.label ?? null } : {}),
+        ...(patch.tags !== undefined ? { tags: patch.tags } : {}),
+        ...(patch.metadata !== undefined
+          ? { metadata: patch.metadata === null ? null : (patch.metadata as object) }
+          : {}),
+      },
+    });
+    return mapWalletRowToWallet(row as unknown as PrismaWalletRow);
+  }
+
   async registerWallet(wallet: Wallet): Promise<Wallet> {
     const row = await this.prisma.wallet.upsert({
       where: { id: wallet.id },
@@ -702,6 +739,46 @@ export class PrismaWebhookDeliveryStore implements WebhookDeliveryStore {
         lastError: error,
         nextRetryAt: null,
         deadLetteredAt,
+      },
+    });
+    return mapWebhookDeliveryRowToDelivery(row as unknown as PrismaWebhookDeliveryRow);
+  }
+
+  /**
+   * Lists dead-lettered deliveries, newest first, with pagination.
+   */
+  async listDeadLettered(limit: number, offset: number): Promise<WebhookDelivery[]> {
+    const rows = await this.prisma.webhookDelivery.findMany({
+      where: { status: 'dead_lettered' },
+      orderBy: { deadLetteredAt: 'desc' },
+      take: limit,
+      skip: offset,
+    });
+    return rows.map((row) =>
+      mapWebhookDeliveryRowToDelivery(row as unknown as PrismaWebhookDeliveryRow),
+    );
+  }
+
+  /**
+   * Returns a single dead-lettered delivery, or null if it is not dead-lettered.
+   */
+  async getDeadLettered(deliveryId: string): Promise<WebhookDelivery | null> {
+    const row = await this.prisma.webhookDelivery.findUnique({ where: { id: deliveryId } });
+    if (!row || row.status !== 'dead_lettered') {
+      return null;
+    }
+    return mapWebhookDeliveryRowToDelivery(row as unknown as PrismaWebhookDeliveryRow);
+  }
+
+  /**
+   * Records a replay attempt: bumps replayCount and sets replayedAt.
+   */
+  async markReplayed(deliveryId: string, replayedAt: Date = new Date()): Promise<WebhookDelivery> {
+    const row = await this.prisma.webhookDelivery.update({
+      where: { id: deliveryId },
+      data: {
+        replayCount: { increment: 1 },
+        replayedAt,
       },
     });
     return mapWebhookDeliveryRowToDelivery(row as unknown as PrismaWebhookDeliveryRow);

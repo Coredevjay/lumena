@@ -23,6 +23,31 @@ describe("OpenAPI Specification", () => {
     expect(openApiSpec.paths["/policy/{walletId}"]).toHaveProperty("delete");
   });
 
+  it("defines the health details endpoint", () => {
+    expect(openApiSpec.paths).toHaveProperty("/health/details");
+    expect(openApiSpec.paths["/health/details"]).toHaveProperty("get");
+  });
+
+  it("defines the wallet metadata PATCH endpoint", () => {
+    expect(openApiSpec.paths).toHaveProperty("/wallets/{address}");
+    expect(openApiSpec.paths["/wallets/{address}"]).toHaveProperty("patch");
+  });
+
+  it("defines the webhook DLQ inspection and replay endpoints", () => {
+    expect(openApiSpec.paths).toHaveProperty("/webhooks/dlq");
+    expect(openApiSpec.paths["/webhooks/dlq"]).toHaveProperty("get");
+    expect(openApiSpec.paths).toHaveProperty("/webhooks/dlq/{id}/replay");
+    expect(openApiSpec.paths["/webhooks/dlq/{id}/replay"]).toHaveProperty("post");
+  });
+
+  it("declares only a status property on the public health response", () => {
+    const healthGet = openApiSpec.paths["/health"].get;
+    const response = healthGet.responses["200"];
+    const schema = response.content["application/json"].schema;
+    expect(schema).toHaveProperty("properties");
+    expect(Object.keys(schema.properties)).toEqual(["status"]);
+  });
+
   it("defines valid request and response schemas", () => {
     expect(openApiSpec.components.schemas).toHaveProperty("SpendLimitRule");
     expect(openApiSpec.components.schemas).toHaveProperty("VelocityRule");

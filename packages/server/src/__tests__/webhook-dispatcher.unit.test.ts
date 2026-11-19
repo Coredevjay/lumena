@@ -383,6 +383,99 @@ describe("WebhookDispatcher Unit Tests", () => {
     await expect(dispatcher.retryDelivery("missing-delivery")).rejects.toThrow();
   });
 
+  it("re-signs the payload with the current secret when replaying a dead letter", async () => {
+    const dispatcher = createDispatcher({ timeoutMs: 500 });
+    const rotatedSecret = "rotated-webhook-secret";
+
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response("Internal Server Error", { status: 500 }));
+
+    dispatcher.register({
+      id: "wh-replay",
+      url: "https://example.com/replay",
+      secret,
+      events: ["*"],
+    });
+
+    const results = await dispatcher.dispatch("transaction.cosigned", { txHash: "replay" });
+    const deliveryId = results[0].deliveryId;
+
+    for (let i = 0; i < 5; i++) {
+      await dispatcher.processRetry(deliveryId);
+    }
+
+    expect(await dispatcher.listDeadLetters()).toHaveLength(1);
+
+    // Rotate the secret before replaying.
+    dispatcher.register({
+      id: "wh-replay",
+      url: "https://example.com/replay",
+      secret: rotatedSecret,
+      events: ["*"],
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response("OK", { status: 200 }));
+    globalThis.fetch = fetchMock;
+
+    const replayed = await dispatcher.replayDeadLetter(deliveryId);
+    expect(replayed.success).toBe(true);
+    expect(replayed.status).toBe("delivered");
+    expect(replayed.deliveryId).toBe(deliveryId);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    const body = init.body as string;
+    const expectedSignature = `sha256=${createHmac("sha256", rotatedSecret).update(body).digest("hex")}`;
+    expect(headers["X-Lumen-Signature"]).toBe(expectedSignature);
+    expect(verifyWebhookSignature(body, headers["X-Lumen-Signature"], rotatedSecret)).toBe(true);
+    expect(verifyWebhookSignature(body, headers["X-Lumen-Signature"], secret)).toBe(false);
+
+    expect(await dispatcher.listDeadLetters()).toHaveLength(0);
+    await expect(dispatcher.replayDeadLetter("missing-delivery")).rejects.toThrow();
+  });
+
+  it("paginates dead letters with limit and offset", async () => {
+    const dispatcher = createDispatcher({ timeoutMs: 500 });
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response("Internal Server Error", { status: 500 }));
+
+    dispatcher.register({
+      id: "wh-dlq-page",
+      url: "https://example.com/dlq-page",
+      secret,
+      events: ["*"],
+    });
+
+    const deliveryIds: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const results = await dispatcher.dispatch("transaction.cosigned", { index: i });
+      deliveryIds.push(results[0].deliveryId);
+    }
+
+    for (const deliveryId of deliveryIds) {
+      for (let i = 0; i < 5; i++) {
+        await dispatcher.processRetry(deliveryId);
+      }
+    }
+
+    const all = await dispatcher.listDeadLetters();
+    expect(all).toHaveLength(5);
+
+    const firstPage = await dispatcher.listDeadLetters({ limit: 2 });
+    expect(firstPage).toHaveLength(2);
+    expect(firstPage.map((d) => d.deliveryId)).toEqual(all.slice(0, 2).map((d) => d.deliveryId));
+
+    const secondPage = await dispatcher.listDeadLetters({ limit: 2, offset: 2 });
+    expect(secondPage).toHaveLength(2);
+    expect(secondPage.map((d) => d.deliveryId)).toEqual(all.slice(2, 4).map((d) => d.deliveryId));
+
+    const lastPage = await dispatcher.listDeadLetters({ limit: 2, offset: 4 });
+    expect(lastPage).toHaveLength(1);
+    expect(lastPage[0].deliveryId).toBe(all[4].deliveryId);
+
+    const beyond = await dispatcher.listDeadLetters({ limit: 2, offset: 10 });
+    expect(beyond).toHaveLength(0);
+  });
+
   it("persists delivery history and reloads it from a new dispatcher", async () => {
     const logPath = path.join(tempDir, "persistent-deliveries.jsonl");
     const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));

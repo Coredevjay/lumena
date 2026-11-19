@@ -1,0 +1,96 @@
+name: Contract Integration Tests
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  push:
+    branches: [ main ]
+    paths:
+      - 'contracts/**'
+      - 'packages/core/src/soroban/**'
+      - 'packages/core/src/__tests__/soroban.integration.test.ts'
+      - '.github/workflows/contract-integration.yml'
+  pull_request:
+    paths:
+      - 'contracts/**'
+      - 'packages/core/src/soroban/**'
+      - 'packages/core/src/__tests__/soroban.integration.test.ts'
+      - '.github/workflows/contract-integration.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  WASM_TARGET: wasm32-unknown-unknown
+
+jobs:
+  contract-integration:
+    name: Deploy contracts to quickstart & run helper integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.WASM_TARGET }}
+
+      - name: Build paymaster, session-keys and smart-account contracts
+        run: |
+          set -euo pipefail
+          for contract in paymaster session-keys smart-account; do
+            cargo build \
+              --manifest-path "contracts/${contract}/Cargo.toml" \
+              --target ${{ env.WASM_TARGET }} \
+              --release \
+              --target-dir target/integration
+          done
+          ls -l target/integration/${{ env.WASM_TARGET }}/release/*.wasm
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start Stellar Quickstart container
+        run: docker compose -f docker/docker-compose.yml up -d stellar
+
+      - name: Wait for Horizon and Soroban RPC readiness
+        run: |
+          timeout 180s bash -c 'until curl -sf http://localhost:8000/ > /dev/null; do sleep 2; done'
+          timeout 180s bash -c 'until curl -sf -X POST http://localhost:8000/rpc -H "Content-Type: application/json" -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\"}" > /dev/null; do sleep 2; done'
+
+      - name: Run Soroban helper integration tests
+        run: pnpm --filter @lumen/core exec vitest run src/__tests__/soroban.integration.test.ts
+        env:
+          HORIZON_URL: http://localhost:8000
+          RPC_URL: http://localhost:8000/rpc
+          CONTRACT_WASM_DIR: ${{ github.workspace }}/target/integration/${{ env.WASM_TARGET }}/release
+
+      - name: Collect Stellar container logs
+        if: failure()
+        run: |
+          mkdir -p integration-logs
+          docker compose -f docker/docker-compose.yml logs stellar > integration-logs/stellar.log 2>&1 || true
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-integration-logs
+          path: integration-logs/
+          retention-days: 7
+
+      - name: Tear down Stellar Quickstart container
+        if: always()
+        run: docker compose -f docker/docker-compose.yml down -v

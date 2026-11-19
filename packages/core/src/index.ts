@@ -15,7 +15,15 @@ export {
   type BuildTransactionOpts,
 } from "./stellar/transaction.js";
 export { pathPayment, pathPaymentStrictReceive, findPaths } from "./stellar/path-payment.js";
-export { KNOWN_ASSETS, getAsset, getNativeAsset } from "./stellar/assets.js";
+export {
+  KNOWN_ASSETS,
+  getAsset,
+  getNativeAsset,
+  getAssetFlags,
+  getAssetFlagWarnings,
+  type AssetFlags,
+  type GetAssetFlagsOpts,
+} from "./stellar/assets.js";
 export {
   formatAsset,
   isNativeAsset,
@@ -160,3 +168,10 @@ export {
   type UrFrame,
   type AirgapOptions,
 } from "./stellar/airgap.js";
+export {
+  describeOperation,
+  type DescribeOperationOpts,
+  type HorizonOperationRecord,
+  type OperationDescription,
+  type OperationDirection,
+} from "./stellar/operation-history.js";

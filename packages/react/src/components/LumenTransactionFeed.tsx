@@ -7,6 +7,7 @@
  */
 
 import React, { useEffect, useState } from "react";
+import { describeOperation } from "@lumen/core";
 import { useTransactionHistory, type Transaction } from "../use-transaction-history.js";
 
 export type LumenTransactionStatus = "pending" | "confirmed" | "failed";
@@ -53,6 +54,11 @@ function getTimestamp(tx: Transaction): number | null {
   if (typeof value !== "string" && typeof value !== "number") return null;
   const time = new Date(value).getTime();
   return Number.isNaN(time) ? null : time;
+}
+
+function getSummary(tx: Transaction, walletId: string): string | null {
+  if (typeof tx.type !== "string") return null;
+  return describeOperation({ ...tx, type: tx.type }, { account: walletId }).summary;
 }
 
 function getTimeValue(tx: Transaction): number {
@@ -183,6 +189,7 @@ export function LumenTransactionFeed({
           const assetCode = getAssetCode(tx);
           const timestamp = getTimestamp(tx);
           const hash = typeof tx.hash === "string" ? tx.hash : tx.id;
+          const summary = getSummary(tx, walletId);
 
           return (
             <li
@@ -204,6 +211,11 @@ export function LumenTransactionFeed({
                 {ASSET_ICONS[assetCode] ?? assetCode.charAt(0)}
               </span>
               <span className="lumen-tx-feed__details" style={{ flex: 1, minWidth: 0 }}>
+                {summary && (
+                  <span className="lumen-tx-feed__summary" style={{ display: "block" }}>
+                    {summary}
+                  </span>
+                )}
                 <a
                   className="lumen-tx-feed__link"
                   href={`https://stellar.expert/explorer/${network}/tx/${hash}`}

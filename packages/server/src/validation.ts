@@ -17,6 +17,14 @@ export const CosignBatchRequestSchema = z.object({
     .max(50, "A batch may contain at most 50 transactions"),
 });
 
+export const CosignAuthEntryRequestSchema = z.object({
+  entryXdr: z.string().min(1, "entryXdr is required"),
+  walletAddress: z.string().refine((val) => StrKey.isValidEd25519PublicKey(val), {
+    message: "walletAddress must be a valid Stellar public key",
+  }),
+  validUntilLedgerSeq: z.number().int().positive("validUntilLedgerSeq must be a positive integer"),
+});
+
 export const FeeBumpRequestSchema = z.object({
   xdr: z.string().min(1, "xdr is required"),
 });
@@ -95,6 +103,7 @@ export const PolicyRequestSchema = z.object({
 
 export type CosignRequest = z.infer<typeof CosignRequestSchema>;
 export type CosignBatchRequest = z.infer<typeof CosignBatchRequestSchema>;
+export type CosignAuthEntryRequest = z.infer<typeof CosignAuthEntryRequestSchema>;
 export type FeeBumpRequest = z.infer<typeof FeeBumpRequestSchema>;
 export type PolicyRequest = z.infer<typeof PolicyRequestSchema>;
 

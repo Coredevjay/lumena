@@ -20,6 +20,12 @@ export interface EvaluateOpts {
   transaction: Transaction;
 }
 
+export interface EvaluateAuthEntryOpts {
+  walletAddress: string;
+  /** Every contract function in the auth entry's invocation tree. */
+  invocations: Array<{ contractId: string; functionName: string }>;
+}
+
 export interface EvaluateResult {
   approved: boolean;
   reason?: string;
@@ -794,5 +800,62 @@ export class PolicyEngine {
     }
 
     return { approved: true };
+  }
+
+  /**
+   * Evaluates a Soroban authorization entry against the wallet's
+   * `contract_allowlist` rules. Every invocation in the entry's tree must be
+   * allowed.
+   */
+  evaluateAuthEntry(opts: EvaluateAuthEntryOpts): EvaluateResult & { rulesEvaluated: string[] } {
+    const rulesEvaluated: string[] = [];
+    const policy = this.policies.get(opts.walletAddress);
+
+    if (!policy) {
+      return {
+        approved: this.defaultPolicy === "allow",
+        reason:
+          this.defaultPolicy === "deny"
+            ? `No policy found for wallet ${opts.walletAddress}`
+            : undefined,
+        rulesEvaluated,
+      };
+    }
+
+    if (!Array.isArray(policy.rules)) {
+      return { approved: false, reason: "Policy has malformed rules", rulesEvaluated };
+    }
+
+    for (const rule of policy.rules) {
+      if (rule?.type !== "contract_allowlist") {
+        continue;
+      }
+      rulesEvaluated.push(rule.type);
+      const allowlist = rule as ContractAllowlistRule;
+
+      for (const { contractId, functionName } of opts.invocations) {
+        const allowedEntry = allowlist.allowedContracts.find((c) => c.contractId === contractId);
+        if (!allowedEntry) {
+          return {
+            approved: false,
+            reason: `Contract ${contractId} is not in the allowlist`,
+            rulesEvaluated,
+          };
+        }
+        if (
+          allowedEntry.methods &&
+          allowedEntry.methods.length > 0 &&
+          !allowedEntry.methods.includes(functionName)
+        ) {
+          return {
+            approved: false,
+            reason: `Method ${functionName} is not allowed for contract ${contractId}`,
+            rulesEvaluated,
+          };
+        }
+      }
+    }
+
+    return { approved: true, rulesEvaluated };
   }
 }

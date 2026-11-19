@@ -4,7 +4,10 @@ import {
   Wallet,
   KNOWN_ASSETS,
   PasskeyManager,
+  getAssetFlags,
+  getAssetFlagWarnings,
   setupMultisig,
+  type AssetFlags,
   type PasskeyRegistrationOpts,
 } from "@lumen/core";
 import type { StellarNetwork, ContractSimulationResult, ScValInput } from "@lumen/types";
@@ -364,6 +367,34 @@ export class LumenClient {
     }
 
     return wallet.send(destination, asset, amount);
+  }
+
+  /**
+   * Reads the issuer's authorization and clawback flags for an asset and
+   * returns them with user-facing warnings for swap/send flows.
+   *
+   * @param assetCode - `'XLM'`, a known asset code (e.g. `'USDC'`) or a `'CODE:ISSUER'` string
+   */
+  async getAssetFlags(assetCode: string): Promise<{ flags: AssetFlags; warnings: string[] }> {
+    let asset: Asset;
+    if (assetCode === "XLM") {
+      asset = Asset.native();
+    } else if (assetCode.includes(":")) {
+      const [code, issuer] = assetCode.split(":", 2) as [string, string];
+      asset = new Asset(code, issuer);
+    } else {
+      const network = this.client.config.network;
+      const knownAsset = KNOWN_ASSETS[network]?.[assetCode];
+      if (!knownAsset) {
+        throw new Error(
+          `Unknown asset: ${assetCode}. Known assets: ${Object.keys(KNOWN_ASSETS[network] ?? {}).join(", ")}`,
+        );
+      }
+      asset = knownAsset;
+    }
+
+    const flags = await getAssetFlags(asset, this.client);
+    return { flags, warnings: getAssetFlagWarnings(flags) };
   }
 
   async simulateContract(

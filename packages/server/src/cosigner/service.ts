@@ -1,4 +1,12 @@
-import { TransactionBuilder, Transaction, Keypair, xdr } from "@stellar/stellar-sdk";
+import {
+  TransactionBuilder,
+  Transaction,
+  Keypair,
+  xdr,
+  Address,
+  authorizeEntry,
+  hash,
+} from "@stellar/stellar-sdk";
 import type { Signer } from "@lumen/types";
 import { validateTimeBounds, type StellarClient } from "@lumen/core";
 import type { PolicyEngine } from "../policy/engine.js";
@@ -46,6 +54,21 @@ export interface CosignResult {
   approved: boolean;
   reason?: string;
   code?: string;
+  rulesEvaluated?: string[];
+}
+
+export interface CosignAuthEntryRequest {
+  /** Base64-encoded `SorobanAuthorizationEntry` XDR. */
+  entryXdr: string;
+  walletAddress: string;
+  /** Ledger sequence after which the auth entry signature expires. */
+  validUntilLedgerSeq: number;
+}
+
+export interface CosignAuthEntryResult {
+  signedEntryXdr: string;
+  approved: boolean;
+  reason?: string;
   rulesEvaluated?: string[];
 }
 
@@ -243,6 +266,107 @@ export class CosignerService {
 
     return {
       signedXdr: tx.toXDR(),
+      approved: true,
+      rulesEvaluated: policyResult.rulesEvaluated,
+    };
+  }
+
+  async cosignAuthEntry(request: CosignAuthEntryRequest): Promise<CosignAuthEntryResult> {
+    return trackOperation(() => this.cosignAuthEntryInternal(request));
+  }
+
+  /**
+   * Signs a Soroban authorization entry after checking every contract/function
+   * in its invocation tree against the wallet's contract allowlist.
+   */
+  private async cosignAuthEntryInternal(
+    request: CosignAuthEntryRequest
+  ): Promise<CosignAuthEntryResult> {
+    let entry: xdr.SorobanAuthorizationEntry;
+    try {
+      entry = xdr.SorobanAuthorizationEntry.fromXDR(request.entryXdr, "base64");
+    } catch {
+      return { signedEntryXdr: "", approved: false, reason: "Invalid authorization entry XDR" };
+    }
+
+    const credentials = entry.credentials();
+    if (
+      credentials.switch().value !==
+      xdr.SorobanCredentialsType.sorobanCredentialsAddress().value
+    ) {
+      return {
+        signedEntryXdr: "",
+        approved: false,
+        reason: "Authorization entry does not use address credentials",
+      };
+    }
+
+    const credentialAddress = Address.fromScAddress(
+      credentials.address().address()
+    ).toString();
+    if (
+      credentialAddress !== request.walletAddress &&
+      credentialAddress !== this.signer.publicKey()
+    ) {
+      return {
+        signedEntryXdr: "",
+        approved: false,
+        reason: "Authorization entry credentials do not match the wallet or co-signer",
+      };
+    }
+
+    const invocations: Array<{ contractId: string; functionName: string }> = [];
+    const collect = (invocation: xdr.SorobanAuthorizedInvocation): boolean => {
+      const fn = invocation.function();
+      if (
+        fn.switch().value !==
+        xdr.SorobanAuthorizedFunctionType.sorobanAuthorizedFunctionTypeContractFn().value
+      ) {
+        return false;
+      }
+      const args = fn.contractFn();
+      invocations.push({
+        contractId: Address.fromScAddress(args.contractAddress()).toString(),
+        functionName: args.functionName().toString(),
+      });
+      return invocation.subInvocations().every(collect);
+    };
+
+    if (!collect(entry.rootInvocation())) {
+      return {
+        signedEntryXdr: "",
+        approved: false,
+        reason: "Authorization entry contains a non-contract-function invocation",
+      };
+    }
+
+    const policyResult = this.policyEngine.evaluateAuthEntry({
+      walletAddress: request.walletAddress,
+      invocations,
+    });
+
+    if (!policyResult.approved) {
+      return {
+        signedEntryXdr: "",
+        approved: false,
+        reason: policyResult.reason,
+        rulesEvaluated: policyResult.rulesEvaluated,
+      };
+    }
+
+    const signerPublicKey = this.signer.publicKey();
+    const signed = await authorizeEntry(
+      entry,
+      async (preimage: xdr.HashIdPreimage) => ({
+        signature: Buffer.from(await this.signer.sign(hash(preimage.toXDR()))),
+        publicKey: signerPublicKey,
+      }),
+      request.validUntilLedgerSeq,
+      this.client.networkPassphrase
+    );
+
+    return {
+      signedEntryXdr: signed.toXDR("base64"),
       approved: true,
       rulesEvaluated: policyResult.rulesEvaluated,
     };

@@ -26,6 +26,10 @@ export type {
   UseSendPaymentResult,
 } from "./use-send-payment.js";
 
+// #584 — Issuer authorization / clawback flags for swap and send warnings
+export { useAssetFlags } from "./use-asset-flags.js";
+export type { UseAssetFlagsResult } from "./use-asset-flags.js";
+
 // #262 — Gasless payments with optimistic balance updates and auto-rollback
 export { useGaslessTransaction } from "./use-gasless-transaction.js";
 export type {

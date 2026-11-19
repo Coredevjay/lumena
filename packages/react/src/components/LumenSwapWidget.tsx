@@ -15,6 +15,8 @@ export interface LumenSwapWidgetProps {
   marketRate?: number;
   /** Fraction (0–1) above which a price impact warning is shown. Default 0.02 (2%). */
   highPriceImpactThreshold?: number;
+  /** Warnings about the assets' issuer flags (e.g. from `useAssetFlags`), shown above the swap button. */
+  assetWarnings?: string[];
   /** Disables the form while a quote or execution is in flight. */
   loading?: boolean;
   /** Disables the widget completely. */
@@ -143,6 +145,7 @@ export function LumenSwapWidget({
   slippage,
   marketRate,
   highPriceImpactThreshold = 0.02,
+  assetWarnings = [],
   loading = false,
   disabled = false,
   className,
@@ -314,6 +317,28 @@ export function LumenSwapWidget({
           confirmed={severeImpactConfirmed}
           onConfirmChange={setSevereImpactConfirmed}
         />
+      )}
+
+      {assetWarnings.length > 0 && (
+        <div
+          role="alert"
+          style={{
+            padding: "0.75rem 1rem",
+            borderRadius: "12px",
+            border: "1px solid rgba(234, 179, 8, 0.4)",
+            background: "rgba(234, 179, 8, 0.1)",
+            color: "#92400e",
+            fontSize: "0.85rem",
+            lineHeight: 1.5,
+          }}
+        >
+          <strong>Asset restrictions</strong>
+          <ul style={{ margin: "0.35rem 0 0", paddingLeft: "1.25rem" }}>
+            {assetWarnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        </div>
       )}
 
       <button

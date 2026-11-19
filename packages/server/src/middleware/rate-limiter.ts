@@ -46,6 +46,47 @@ export interface TokenBucketResult {
   retryAfter: number;
 }
 
+/**
+ * Runtime-updatable bucket configuration, exposed on the middleware so the
+ * SIGHUP reload path can swap rate limits without recreating the middleware.
+ * See issue #510.
+ */
+export interface TokenBucketRateLimiter {
+  (req: Request, res: Response, next: NextFunction): Promise<void>;
+  /**
+   * Replaces the per-IP and/or per-wallet bucket configuration at runtime.
+   * Invalid values (non-positive or non-finite) are ignored, keeping the
+   * previous configuration for that bucket. Returns the effective config.
+   */
+  setBuckets(update: {
+    ip?: Partial<BucketConfig>;
+    wallet?: Partial<BucketConfig>;
+  }): { ip: BucketConfig; wallet: BucketConfig };
+  /** Returns a snapshot of the currently active bucket configuration. */
+  getBuckets(): { ip: BucketConfig; wallet: BucketConfig };
+}
+
+function isValidBucketValue(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function mergeBucketConfig(
+  current: BucketConfig,
+  update: Partial<BucketConfig> | undefined,
+): BucketConfig {
+  if (!update) return current;
+  const capacity = isValidBucketValue(update.capacity)
+    ? update.capacity
+    : current.capacity;
+  const refillRate = isValidBucketValue(update.refillRate)
+    ? update.refillRate
+    : current.refillRate;
+  if (capacity === current.capacity && refillRate === current.refillRate) {
+    return current;
+  }
+  return { capacity, refillRate };
+}
+
 const DEFAULT_IP_BUCKET: BucketConfig = { capacity: 60, refillRate: 10 };
 const DEFAULT_WALLET_BUCKET: BucketConfig = { capacity: 30, refillRate: 5 };
 const DEFAULT_KEY_PREFIX = "ratelimit:tb";
@@ -204,16 +245,18 @@ async function consume(
  */
 export function createTokenBucketRateLimiter(
   opts: TokenBucketRateLimiterOptions = {},
-) {
-  const ipConfig = opts.ip ?? DEFAULT_IP_BUCKET;
-  const walletConfig = opts.wallet ?? DEFAULT_WALLET_BUCKET;
+): TokenBucketRateLimiter {
+  // Mutable so SIGHUP reloads can swap rate limits without recreating the
+  // middleware (issue #510).
+  let ipConfig: BucketConfig = opts.ip ?? DEFAULT_IP_BUCKET;
+  let walletConfig: BucketConfig = opts.wallet ?? DEFAULT_WALLET_BUCKET;
   const keyPrefix = opts.keyPrefix ?? DEFAULT_KEY_PREFIX;
   const extractWallet = opts.keyExtractor ?? defaultKeyExtractor;
   const onError = opts.onError;
 
   const client = opts.redis ? defineScript(opts.redis) : null;
 
-  return async function tokenBucketRateLimiter(
+  const tokenBucketRateLimiter = async function tokenBucketRateLimiter(
     req: Request,
     res: Response,
     next: NextFunction,
@@ -252,7 +295,20 @@ export function createTokenBucketRateLimiter(
       // Fail open on Redis errors to avoid taking down the API.
       next();
     }
+  } as TokenBucketRateLimiter;
+
+  tokenBucketRateLimiter.setBuckets = (update) => {
+    ipConfig = mergeBucketConfig(ipConfig, update.ip);
+    walletConfig = mergeBucketConfig(walletConfig, update.wallet);
+    return { ip: ipConfig, wallet: walletConfig };
   };
+
+  tokenBucketRateLimiter.getBuckets = () => ({
+    ip: ipConfig,
+    wallet: walletConfig,
+  });
+
+  return tokenBucketRateLimiter;
 }
 
 function sendTooManyRequests(res: Response, retryAfter: number): void {

@@ -15,3 +15,67 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["lumen-server:3000"]
+
+# ---------------------------------------------------------------------------
+# Route-label normalisation (issue #507)
+# ---------------------------------------------------------------------------
+# HTTP metrics (e.g. http_request_duration_seconds) are labelled with the
+# normalised route *pattern* rather than the raw request path, to avoid
+# cardinality explosion from identifiers such as wallet addresses.
+#
+#   GOOD: route="/policy/:walletId"
+#   BAD:  route="/policy/GABC...XYZ"   (never emitted)
+#
+# When querying or building dashboards, always match on the route pattern:
+#
+#   sum by (route) (rate(http_request_duration_seconds_count{route=~"/policy/:walletId"}[5m]))
+#   histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket{route=~"/policy/:walletId"}[5m])))
+#
+# Do NOT filter on raw paths; those labels no longer exist.
+#
+# ---------------------------------------------------------------------------
+# Cosign latency histogram buckets (issue #507)
+# ---------------------------------------------------------------------------
+# The cosign latency histogram (cosign_duration_seconds) uses the following
+# tuned bucket boundaries (in seconds):
+#
+#   0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+#
+# Dashboards should compute quantiles against these buckets, e.g.:
+#
+#   histogram_quantile(0.95, sum by (le) (rate(cosign_duration_seconds_bucket[5m])))
+#   histogram_quantile(0.99, sum by (le) (rate(cosign_duration_seconds_bucket[5m])))
+#
+# Example recording rules (uncomment and move into a rules file if desired):
+#
+# groups:
+#   - name: lumen-http-routes
+#     rules:
+#       - record: lumen:http_request_duration_seconds:p95_by_route
+#         expr: |
+#           histogram_quantile(
+#             0.95,
+#             sum by (le, route) (
+#               rate(http_request_duration_seconds_bucket{route=~"/policy/:walletId"}[5m])
+#             )
+#           )
+#       - record: lumen:http_requests:rate_by_route
+#         expr: |
+#           sum by (route) (
+#             rate(http_request_duration_seconds_count{route=~"/policy/:walletId"}[5m])
+#           )
+#   - name: lumen-cosign-latency
+#     rules:
+#       - record: lumen:cosign_duration_seconds:p95
+#         expr: |
+#           histogram_quantile(
+#             0.95,
+#             sum by (le) (rate(cosign_duration_seconds_bucket[5m]))
+#           )
+#       - record: lumen:cosign_duration_seconds:p99
+#         expr: |
+#           histogram_quantile(
+#             0.99,
+#             sum by (le) (rate(cosign_duration_seconds_bucket[5m]))
+#           )
+# ---------------------------------------------------------------------------

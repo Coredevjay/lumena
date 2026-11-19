@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   generateMnemonic,
   validateMnemonic,
   deriveKeypairFromMnemonic,
 } from '../keys/mnemonic';
 import { KeyManager } from '../keys/manager';
+import { HdWallet } from '../keys/hd-wallet';
 
 // SEP-0005 test vectors
 // https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0005.md
@@ -192,5 +193,84 @@ describe('KeyManager mnemonic integration', () => {
 
   it('recoverFromMnemonic throws for an invalid mnemonic', () => {
     expect(() => manager.recoverFromMnemonic('invalid mnemonic')).toThrow();
+  });
+});
+
+describe('HdWallet.discoverAccounts', () => {
+  /**
+   * Builds a mocked Horizon server whose `loadAccount` succeeds only for the
+   * given set of public keys and rejects (404) for everything else.
+   */
+  function createMockServer(usedPublicKeys: string[]) {
+    const used = new Set(usedPublicKeys);
+    const loadAccount = vi.fn(async (publicKey: string) => {
+      if (used.has(publicKey)) {
+        return { accountId: () => publicKey, sequenceNumber: () => '1' };
+      }
+      const err: any = new Error('Not Found');
+      err.response = { status: 404 };
+      throw err;
+    });
+    return { loadAccount } as any;
+  }
+
+  function publicKeyAt(index: number): string {
+    return deriveKeypairFromMnemonic(ABANDON_MNEMONIC, '', index).publicKey();
+  }
+
+  it('returns no accounts for an empty wallet and stops at gapLimit', async () => {
+    const server = createMockServer([]);
+    const wallet = new HdWallet(ABANDON_MNEMONIC);
+
+    const accounts = await wallet.discoverAccounts({ gapLimit: 3, server });
+
+    expect(accounts).toEqual([]);
+    // Scans indexes 0, 1, 2 and then stops once gapLimit is reached.
+    expect(server.loadAccount).toHaveBeenCalledTimes(3);
+    expect(server.loadAccount).toHaveBeenNthCalledWith(1, publicKeyAt(0));
+    expect(server.loadAccount).toHaveBeenNthCalledWith(2, publicKeyAt(1));
+    expect(server.loadAccount).toHaveBeenNthCalledWith(3, publicKeyAt(2));
+  });
+
+  it('discovers sparse usage (indexes 0 and 3) with gapLimit 2', async () => {
+    const server = createMockServer([publicKeyAt(0), publicKeyAt(3)]);
+    const wallet = new HdWallet(ABANDON_MNEMONIC);
+
+    const accounts = await wallet.discoverAccounts({ gapLimit: 2, server });
+
+    expect(accounts.map((a) => a.index)).toEqual([0, 3]);
+    // Indexes 0..5 are scanned: after index 3 the next two (4, 5) are unused.
+    expect(server.loadAccount).toHaveBeenCalledTimes(6);
+  });
+
+  it('discovers contiguous usage (indexes 0..4) and continues until gapLimit unused', async () => {
+    const used = [0, 1, 2, 3, 4].map(publicKeyAt);
+    const server = createMockServer(used);
+    const wallet = new HdWallet(ABANDON_MNEMONIC);
+
+    const accounts = await wallet.discoverAccounts({ gapLimit: 2, server });
+
+    expect(accounts.map((a) => a.index)).toEqual([0, 1, 2, 3, 4]);
+    // Indexes 0..6 are scanned: after index 4 the next two (5, 6) are unused.
+    expect(server.loadAccount).toHaveBeenCalledTimes(7);
+  });
+
+  it('honors a configurable gapLimit (1 vs 5) producing different scan lengths', async () => {
+    const serverSmall = createMockServer([publicKeyAt(0)]);
+    const serverLarge = createMockServer([publicKeyAt(0)]);
+
+    const walletSmall = new HdWallet(ABANDON_MNEMONIC);
+    const walletLarge = new HdWallet(ABANDON_MNEMONIC);
+
+    const small = await walletSmall.discoverAccounts({ gapLimit: 1, server: serverSmall });
+    const large = await walletLarge.discoverAccounts({ gapLimit: 5, server: serverLarge });
+
+    expect(small.map((a) => a.index)).toEqual([0]);
+    expect(large.map((a) => a.index)).toEqual([0]);
+
+    // gapLimit 1: scan 0 (used) then 1 (unused) -> 2 calls.
+    expect(serverSmall.loadAccount).toHaveBeenCalledTimes(2);
+    // gapLimit 5: scan 0 (used) then 1..5 (unused) -> 6 calls.
+    expect(serverLarge.loadAccount).toHaveBeenCalledTimes(6);
   });
 });

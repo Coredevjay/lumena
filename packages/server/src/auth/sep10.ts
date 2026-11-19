@@ -3,7 +3,6 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import {
   Keypair,
-  Networks,
   TransactionBuilder,
   Transaction,
   Account,
@@ -11,6 +10,7 @@ import {
   BASE_FEE,
   Memo,
 } from '@stellar/stellar-sdk';
+import { resolveNetwork } from '@lumen/core';
 
 /**
  * SEP-10 Web Authentication Protocol implementation.
@@ -41,17 +41,7 @@ function getNetworkPassphrase(): string {
   if (passphrase) {
     return passphrase;
   }
-  const network = (process.env.LUMEN_NETWORK || 'testnet').toLowerCase();
-  switch (network) {
-    case 'public':
-    case 'mainnet':
-      return Networks.PUBLIC;
-    case 'futurenet':
-      return Networks.FUTURENET;
-    case 'testnet':
-    default:
-      return Networks.TESTNET;
-  }
+  return resolveNetwork(process.env.LUMEN_NETWORK ?? 'testnet').networkPassphrase;
 }
 
 function getJwtSecret(): string {

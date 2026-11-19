@@ -2,12 +2,17 @@
 
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 import type { LumenClient } from "@lumen/web-sdk";
+import { FUTURENET, PUBLIC, TESTNET } from "@lumen/core";
 import { useIsMounted } from "./hooks/use-is-mounted.js";
 
-/** Stellar networks a `LumenProvider` can switch between. */
-export type LumenNetwork = "testnet" | "futurenet" | "mainnet";
+/**
+ * Stellar networks a `LumenProvider` can switch between. Derived from the
+ * canonical network constants in `@lumen/core` so the React package never
+ * hardcodes network names.
+ */
+export type LumenNetwork = typeof TESTNET | typeof FUTURENET | typeof PUBLIC;
 
-export const DEFAULT_SUPPORTED_NETWORKS: LumenNetwork[] = ["testnet", "futurenet", "mainnet"];
+export const DEFAULT_SUPPORTED_NETWORKS: LumenNetwork[] = [TESTNET, FUTURENET, PUBLIC];
 
 export interface LumenContextValue {
   /** Client bound to `currentNetwork`. Changes identity when the network is switched. */
@@ -86,8 +91,8 @@ function createServerSafeClientProxy(): LumenClient {
 export const serverSafeLumenContextValue: LumenContextValue = {
   client: createServerSafeClientProxy(),
   isMounted: false,
-  currentNetwork: "testnet",
-  supportedNetworks: ["testnet"],
+  currentNetwork: TESTNET,
+  supportedNetworks: [TESTNET],
   switchNetwork: () => {},
 };
 
@@ -117,7 +122,7 @@ export interface LumenProviderProps {
 
 export function LumenProvider({
   client,
-  network = "testnet",
+  network = TESTNET,
   supportedNetworks,
   createClient,
   locale = "en",
@@ -197,7 +202,7 @@ export interface LumenServerProviderProps {
  */
 export function LumenServerProvider({
   client,
-  network = "testnet",
+  network = TESTNET,
   children,
 }: LumenServerProviderProps) {
   const value: LumenContextValue = {

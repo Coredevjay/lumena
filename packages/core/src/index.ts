@@ -1,3 +1,11 @@
+export {
+  TESTNET,
+  PUBLIC,
+  FUTURENET,
+  LOCAL,
+  resolveNetwork,
+  type NetworkConfig,
+} from "./networks.js";
 export { StellarClient } from "./stellar/client.js";
 export { createSponsoredAccount } from "./stellar/account.js";
 export {
@@ -69,7 +77,14 @@ export {
   mnemonicToSeed,
   type HdDerivedAccount,
   type HdWalletOpts,
+  type DiscoverAccountsOpts,
+  type DiscoverAccountsResult,
 } from "./keys/hd-wallet.js";
+export {
+  KDF_FLOOR,
+  validateKdfParams,
+  upgradeKeystore,
+} from "./keys/keystore.js";
 export { Wallet, type SendOpts } from "./wallet/wallet.js";
 export { Sep41Token } from "./stellar/sep41.js";
 export {
@@ -78,7 +93,7 @@ export {
   type TimeBoundsValidationOpts,
   type TimeBoundsValidationResult,
 } from "./stellar/timebounds.js";
-export { toScVal, fromScVal } from "./soroban/scval.js";
+export { toScVal, fromScVal, sc } from "./soroban/scval.js";
 export { ContractClient } from "./soroban/client.js";
 export {
   Sep24Client,

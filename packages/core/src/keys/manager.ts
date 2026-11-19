@@ -22,6 +22,9 @@ export type { KeystoreEnvelope };
 export {
   KEYSTORE_VERSION,
   DEFAULT_ARGON2ID_PARAMS,
+  KDF_FLOOR,
+  validateKdfParams,
+  upgradeKeystore,
   parseKeystoreEnvelope,
   encryptKeystore,
   decryptKeystore,
@@ -148,6 +151,7 @@ export class KeyManager {
     const envelope = await encryptKeystore(key.secret(), passphrase, {
       ...options,
       publicKey: key.publicKey(),
+      ...(options?.kdf !== undefined ? { kdf: options.kdf } : {}),
     });
 
     const stored: StoredKey = {
@@ -206,6 +210,21 @@ export class KeyManager {
     if (keypair.publicKey() !== publicKey) {
       throw new Error("Stored key public key does not match its secret");
     }
+
+    // Migrate legacy/older envelopes to the current version and KDF params.
+    const upgraded = await upgradeKeystore(envelope, passphrase);
+    if (upgraded !== envelope) {
+      const migrated: StoredKey = {
+        publicKey: upgraded.publicKey,
+        encryptedSecret: JSON.stringify(upgraded),
+        createdAt: new Date(upgraded.createdAt),
+      };
+      this.storage.setItem(
+        `${STORAGE_PREFIX}${migrated.publicKey}`,
+        JSON.stringify(migrated),
+      );
+    }
+
     return keypair;
   }
 

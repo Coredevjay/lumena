@@ -1,3 +1,4 @@
+import { FUTURENET, PUBLIC, TESTNET } from '@lumen/core';
 import { logger } from '../utils/logger';
 import { metrics } from '../utils/metrics';
 
@@ -32,18 +33,16 @@ export interface FailoverStellarClientOptions {
 
 const NETWORK_PRESETS: Record<string, StellarEndpoint[]> = {
   mainnet: [
-    { url: 'https://horizon.stellar.org', kind: 'horizon', region: 'global' },
-    { url: 'https://horizon.stellar.lobstr.co', kind: 'horizon', region: 'global' },
-    { url: 'https://soroban-rpc.mainnet.stellar.gateway.fm', kind: 'soroban', region: 'global' },
-    { url: 'https://rpc.ankr.com/stellar_soroban', kind: 'soroban', region: 'global' },
+    { url: PUBLIC.horizonUrl, kind: 'horizon', region: 'global' },
+    { url: PUBLIC.rpcUrl, kind: 'soroban', region: 'global' },
   ],
   testnet: [
-    { url: 'https://horizon-testnet.stellar.org', kind: 'horizon', region: 'global' },
-    { url: 'https://soroban-testnet.stellar.org', kind: 'soroban', region: 'global' },
+    { url: TESTNET.horizonUrl, kind: 'horizon', region: 'global' },
+    { url: TESTNET.rpcUrl, kind: 'soroban', region: 'global' },
   ],
   futurenet: [
-    { url: 'https://horizon-futurenet.stellar.org', kind: 'horizon', region: 'global' },
-    { url: 'https://rpc-futurenet.stellar.org', kind: 'soroban', region: 'global' },
+    { url: FUTURENET.horizonUrl, kind: 'horizon', region: 'global' },
+    { url: FUTURENET.rpcUrl, kind: 'soroban', region: 'global' },
   ],
 };
 

@@ -36,7 +36,31 @@ Checklists for teams integrating `@lumen/web-sdk`, `@lumen/react`, and
 - [ ] Use Subresource Integrity for any script loaded from a CDN, or bundle the
       SDK instead.
 
-## 3. Session state storage
+## 3. Network constants and passphrases
+
+- [ ] Import network passphrases and endpoints from `@lumen/core`'s `networks`
+      module instead of hardcoding strings:
+
+      ```ts
+      import { TESTNET, PUBLIC, FUTURENET, LOCAL, resolveNetwork } from "@lumen/core";
+
+      const network = resolveNetwork("testnet"); // returns TESTNET
+      const passphrase = network.networkPassphrase;
+      const horizonUrl = network.horizonUrl;
+      ```
+
+- [ ] Use `resolveNetwork()` for values that come from configuration or
+      environment variables so unknown names fail fast rather than silently
+      falling back to a wrong network.
+- [ ] Do not copy passphrase or endpoint literals into your own code. A
+      mistyped passphrase produces signatures for the wrong network, and stale
+      endpoints break after protocol upgrades.
+- [ ] Add the `horizonUrl` and Soroban RPC endpoints of the networks you use to
+      your CSP `connect-src` (see section 2), for example
+      `connect-src 'self' https://horizon-testnet.stellar.org
+      https://soroban-testnet.stellar.org`.
+
+## 4. Session state storage
 
 - [ ] Treat `localStorage` as readable by any same-origin script. `KeyManager`
       stores AES-GCM ciphertext there by default; the passphrase is never
@@ -50,7 +74,7 @@ Checklists for teams integrating `@lumen/web-sdk`, `@lumen/react`, and
 - [ ] Prevent XSS (output encoding, CSP, dependency hygiene); it is the primary
       threat to browser-held key material.
 
-## 4. Co-signer, fee-payer, and API key handling
+## 5. Co-signer, fee-payer, and API key handling
 
 - [ ] Hold the co-signer and fee-payer keys in a KMS or HSM in production
       (`AwsKmsSigner`, `GcpKmsSigner`, `VaultSigner`, `AzureKeyVaultSigner`,

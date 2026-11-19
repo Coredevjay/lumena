@@ -161,3 +161,227 @@ export const WebhookDeliveryRetryParamsSchema = z.object({
 });
 
 export type WebhookDeliveryRetryParams = z.infer<typeof WebhookDeliveryRetryParamsSchema>;
+
+/**
+ * Log levels accepted by the server. Kept in sync with the logger's level set.
+ */
+export const LOG_LEVELS = ["fatal", "error", "warn", "info", "debug", "trace", "silent"] as const;
+export type LogLevel = (typeof LOG_LEVELS)[number];
+
+/**
+ * Rate limit configuration (requests per window, in milliseconds).
+ */
+export interface RateLimitConfig {
+  windowMs: number;
+  max: number;
+}
+
+/**
+ * Fully resolved server configuration.
+ */
+export interface ServerConfig {
+  corsOrigins: string[];
+  logLevel: LogLevel;
+  rateLimits: RateLimitConfig;
+  apiKey?: string;
+  credentialsEnabled: boolean;
+}
+
+/**
+ * The subset of configuration that can be changed at runtime via SIGHUP.
+ */
+export interface ReloadableConfig {
+  corsOrigins: string[];
+  logLevel: LogLevel;
+  rateLimits: RateLimitConfig;
+}
+
+export type ConfigResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
+const DEFAULT_LOG_LEVEL: LogLevel = "info";
+const DEFAULT_RATE_LIMIT: RateLimitConfig = { windowMs: 60_000, max: 100 };
+
+/**
+ * Normalise a single CORS origin entry to `scheme://host[:port]`.
+ * Returns an error string when the entry is malformed or contains a path,
+ * query, fragment, or credentials.
+ */
+export function normaliseOrigin(raw: string): ConfigResult<string> {
+  const entry = raw.trim();
+  if (entry.length === 0) {
+    return { ok: false, error: "empty origin entry" };
+  }
+
+  let url: URL;
+  try {
+    url = new URL(entry);
+  } catch {
+    return { ok: false, error: `malformed origin: "${entry}"` };
+  }
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return { ok: false, error: `origin must use http or https: "${entry}"` };
+  }
+  if (url.username || url.password) {
+    return { ok: false, error: `origin must not contain credentials: "${entry}"` };
+  }
+  if (url.pathname !== "/" && url.pathname !== "") {
+    return { ok: false, error: `origin must not contain a path: "${entry}"` };
+  }
+  if (url.search || url.hash) {
+    return { ok: false, error: `origin must not contain a query or fragment: "${entry}"` };
+  }
+
+  return { ok: true, value: url.origin };
+}
+
+/**
+ * Parse the comma-separated `CORS_ORIGINS` value into a normalised list.
+ * A single `*` entry is preserved as-is (wildcard) and must be validated
+ * against credentials separately.
+ */
+export function parseCorsOrigins(raw: string | undefined): ConfigResult<string[]> {
+  if (raw === undefined || raw.trim() === "") {
+    return { ok: true, value: [] };
+  }
+
+  const parts = raw
+    .split(",")
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+
+  if (parts.length === 0) {
+    return { ok: true, value: [] };
+  }
+
+  const origins: string[] = [];
+  for (const part of parts) {
+    if (part === "*") {
+      origins.push("*");
+      continue;
+    }
+    const result = normaliseOrigin(part);
+    if (!result.ok) {
+      return result;
+    }
+    origins.push(result.value);
+  }
+
+  return { ok: true, value: origins };
+}
+
+function parsePositiveInt(raw: string | undefined, fallback: number): ConfigResult<number> {
+  if (raw === undefined || raw.trim() === "") {
+    return { ok: true, value: fallback };
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    return { ok: false, error: `expected a positive integer, got "${raw}"` };
+  }
+  return { ok: true, value: parsed };
+}
+
+function parseLogLevel(raw: string | undefined): ConfigResult<LogLevel> {
+  if (raw === undefined || raw.trim() === "") {
+    return { ok: true, value: DEFAULT_LOG_LEVEL };
+  }
+  const level = raw.trim().toLowerCase();
+  if (!(LOG_LEVELS as readonly string[]).includes(level)) {
+    return { ok: false, error: `invalid log level: "${raw}"` };
+  }
+  return { ok: true, value: level as LogLevel };
+}
+
+function parseRateLimits(env: NodeJS.ProcessEnv): ConfigResult<RateLimitConfig> {
+  const windowMs = parsePositiveInt(env.RATE_LIMIT_WINDOW_MS, DEFAULT_RATE_LIMIT.windowMs);
+  if (!windowMs.ok) {
+    return { ok: false, error: `RATE_LIMIT_WINDOW_MS: ${windowMs.error}` };
+  }
+  const max = parsePositiveInt(env.RATE_LIMIT_MAX, DEFAULT_RATE_LIMIT.max);
+  if (!max.ok) {
+    return { ok: false, error: `RATE_LIMIT_MAX: ${max.error}` };
+  }
+  return { ok: true, value: { windowMs: windowMs.value, max: max.value } };
+}
+
+/**
+ * Validate a resolved configuration, throwing on unsafe combinations.
+ */
+export function validateConfig(cfg: ServerConfig): void {
+  if (cfg.corsOrigins.includes("*")) {
+    if (cfg.corsOrigins.length > 1) {
+      throw new Error("CORS_ORIGINS: wildcard '*' cannot be combined with explicit origins");
+    }
+    if (cfg.credentialsEnabled || (cfg.apiKey !== undefined && cfg.apiKey.length > 0)) {
+      throw new Error(
+        "CORS_ORIGINS: wildcard '*' is not allowed when credentials or API keys are enabled",
+      );
+    }
+  }
+
+  if (!(LOG_LEVELS as readonly string[]).includes(cfg.logLevel)) {
+    throw new Error(`invalid log level: "${cfg.logLevel}"`);
+  }
+
+  if (!Number.isInteger(cfg.rateLimits.windowMs) || cfg.rateLimits.windowMs <= 0) {
+    throw new Error("rateLimits.windowMs must be a positive integer");
+  }
+  if (!Number.isInteger(cfg.rateLimits.max) || cfg.rateLimits.max <= 0) {
+    throw new Error("rateLimits.max must be a positive integer");
+  }
+}
+
+/**
+ * Load and validate configuration from the environment.
+ * Throws on invalid or unsafe configuration so the process can fail fast.
+ */
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
+  const corsOrigins = parseCorsOrigins(env.CORS_ORIGINS);
+  if (!corsOrigins.ok) {
+    throw new Error(`CORS_ORIGINS: ${corsOrigins.error}`);
+  }
+
+  const logLevel = parseLogLevel(env.LOG_LEVEL);
+  if (!logLevel.ok) {
+    throw new Error(logLevel.error);
+  }
+
+  const rateLimits = parseRateLimits(env);
+  if (!rateLimits.ok) {
+    throw new Error(rateLimits.error);
+  }
+
+  const apiKey = env.API_KEY && env.API_KEY.length > 0 ? env.API_KEY : undefined;
+  const credentialsEnabled = env.CREDENTIALS_ENABLED === "true";
+
+  const cfg: ServerConfig = {
+    corsOrigins: corsOrigins.value,
+    logLevel: logLevel.value,
+    rateLimits: rateLimits.value,
+    apiKey,
+    credentialsEnabled,
+  };
+
+  validateConfig(cfg);
+  return cfg;
+}
+
+/**
+ * Re-read the environment and return the reloadable subset of configuration.
+ * On any validation error the caller should retain the previous values.
+ */
+export function reloadConfig(env: NodeJS.ProcessEnv = process.env): ConfigResult<ReloadableConfig> {
+  try {
+    const cfg = loadConfig(env);
+    return {
+      ok: true,
+      value: {
+        corsOrigins: cfg.corsOrigins,
+        logLevel: cfg.logLevel,
+        rateLimits: cfg.rateLimits,
+      },
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}

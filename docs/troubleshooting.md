@@ -89,3 +89,51 @@ The server returns the same information in its error envelope with status `400`:
 | `op_resource_limit_exceeded` | The contract invocation exceeded its resource limits. | Re-simulate the transaction and apply the returned resources. |
 | `op_entry_archived` | A contract ledger entry has been archived. | Restore the archived entry before invoking the contract. |
 | `op_insufficient_refundable_fee` | The refundable fee is too low for the contract invocation. | Re-simulate the transaction and increase the resource fee. |
+
+## Reloading configuration with SIGHUP
+
+Non-critical settings can be reloaded without restarting the server by sending
+`SIGHUP` to the process:
+
+```sh
+kill -HUP <pid>
+# or, when running in Docker
+docker kill --signal=HUP <container>
+```
+
+The following settings are reloadable:
+
+| Setting | Description |
+| --- | --- |
+| Log level | Verbosity of the server logs (e.g. `debug`, `info`, `warn`, `error`). |
+| Rate limits | Request rate limits applied per client. |
+| CORS allowlist | The list of origins allowed to make cross-origin requests. |
+
+All other settings (ports, database connection strings, signing keys, etc.)
+still require a full restart.
+
+On reload the configuration is validated first. If it is invalid, a warning is
+logged describing the problem and the previous values are kept, so a bad edit
+never takes the server down. Fix the configuration and send `SIGHUP` again to
+apply it.
+
+## Prometheus metrics
+
+### Route labels
+
+HTTP metrics are labelled with the route pattern rather than the raw request
+path, so `/policy/GABC...` is reported as `/policy/:walletId`. This keeps label
+cardinality bounded and prevents wallet addresses from leaking into metrics.
+When adding new routes, always label them with the registered route pattern.
+
+### Cosign latency histogram
+
+The `cosign_latency_seconds` histogram uses buckets tuned for signing
+round-trips (in seconds):
+
+```
+0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+```
+
+Use these buckets when building dashboards or alerts so latency panels match
+the exported data.

@@ -10,6 +10,14 @@ const { logger } = await import("./logger.js");
 import type { Signer } from "@lumen/types";
 import { logger } from "./logger.js";
 import { registerShutdownHandlers } from "./lifecycle.js";
+import { loadConfig } from "./config.js";
+import { registerReloadHandler } from "./reload.js";
+
+// Parse and validate configuration before anything else starts. Invalid or
+// unsafe combinations (e.g. CORS_ORIGINS="*" together with credentials/API
+// keys) throw here so the process fails fast instead of serving traffic.
+const config = loadConfig(process.env);
+logger.setLevel?.(config.logLevel);
 
 /**
  * SIGNER_PROVIDER controls how private keys are accessed:
@@ -66,7 +74,7 @@ async function buildSigners(): Promise<{ cosigner: Signer; feePayer: Signer }> {
 const { cosigner, feePayer } = await buildSigners();
 
 const serverResult = createServer({
-  port: parseInt(process.env.PORT ?? "3000"),
+  port: config.port,
   network: (process.env.STELLAR_NETWORK as any) ?? "testnet",
   horizonUrl: process.env.HORIZON_URL,
   rpcUrl: process.env.SOROBAN_RPC_URL,
@@ -78,13 +86,22 @@ const serverResult = createServer({
   walletRegistry: policyStore,
   cosignerSigner: cosigner,
   feePayerSigner: feePayer,
-  apiKey: process.env.API_KEY,
-  windowMs: process.env.RATE_LIMIT_WINDOW_MS
-    ? parseInt(process.env.RATE_LIMIT_WINDOW_MS)
-    : undefined,
-  max: process.env.RATE_LIMIT_MAX ? parseInt(process.env.RATE_LIMIT_MAX) : undefined,
+  apiKey: config.apiKey,
+  corsOrigins: config.corsOrigins,
+  logLevel: config.logLevel,
+  windowMs: config.rateLimit.windowMs,
+  max: config.rateLimit.max,
 });
 serverResult.sponsorMonitorService.start();
+
+// SIGHUP reloads non-critical settings (log level, rate limits, CORS
+// allowlist). Invalid configs are logged and the previous values are kept.
+// Reloadable: LOG_LEVEL, RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX, CORS_ORIGINS.
+// Not reloadable (require restart): PORT, API_KEY, signer/KMS settings,
+// STELLAR_NETWORK, HORIZON_URL, SOROBAN_RPC_URL.
+registerReloadHandler({
+  reload: () => serverResult.reloadConfig(),
+});
 
 // Install SIGINT/SIGTERM handlers so Kubernetes pod rollouts drain in-flight
 // co-sign and submit operations before the process exits cleanly (code 0).

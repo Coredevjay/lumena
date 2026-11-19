@@ -1,6 +1,8 @@
 import type { Server } from 'http';
 import type { Redis } from 'ioredis';
 
+import { reloadConfig, type ReloadableConfig } from './config';
+
 /**
  * Graceful shutdown lifecycle coordinator.
  *
@@ -32,6 +34,85 @@ const inFlight = new Set<InFlightEntry>();
 
 let shuttingDown = false;
 let handlersRegistered = false;
+let reloadHandlerRegistered = false;
+
+/**
+ * Callback invoked with the freshly validated reloadable settings after a
+ * successful SIGHUP-triggered reload. Consumers use this to atomically apply
+ * the new log level, rate limits and CORS allowlist.
+ */
+export type ReloadApplyHook = (config: ReloadableConfig) => void | Promise<void>;
+
+export interface ReloadOptions {
+  /**
+   * Applies the reloaded settings. Invoked only after the new configuration
+   * has been validated; if it throws, the previous values are kept.
+   */
+  apply?: ReloadApplyHook;
+  /** Optional logger; defaults to `console`. */
+  logger?: Pick<Console, 'log' | 'warn' | 'error'>;
+}
+
+/**
+ * Reloadable settings (documented in `docs/configuration.md`):
+ * - log level
+ * - rate limits
+ * - CORS allowlist
+ *
+ * All other settings require a restart.
+ */
+async function performReload(options: ReloadOptions): Promise<boolean> {
+  const logger = options.logger ?? console;
+  let config: ReloadableConfig;
+  try {
+    config = reloadConfig();
+  } catch (err) {
+    logger.warn(
+      `[lifecycle] SIGHUP reload rejected, keeping previous configuration: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return false;
+  }
+
+  try {
+    if (options.apply) {
+      await options.apply(config);
+    }
+  } catch (err) {
+    logger.warn(
+      `[lifecycle] SIGHUP reload failed to apply, keeping previous configuration: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return false;
+  }
+
+  logger.log('[lifecycle] configuration reloaded via SIGHUP');
+  return true;
+}
+
+/**
+ * Register a SIGHUP handler that reloads the reloadable settings (log level,
+ * rate limits, CORS allowlist). Invalid configurations are rejected with a
+ * warning and the previous values are kept.
+ *
+ * Idempotent: subsequent calls are ignored. Does not interfere with the
+ * SIGINT/SIGTERM shutdown handlers.
+ */
+export function registerReloadHandler(options: ReloadOptions = {}): void {
+  if (reloadHandlerRegistered) {
+    return;
+  }
+  reloadHandlerRegistered = true;
+
+  process.on('SIGHUP', () => {
+    if (shuttingDown) {
+      return;
+    }
+    void performReload(options);
+  });
+}
 
 /**
  * Register an in-flight operation so the shutdown coordinator can wait for it
@@ -198,4 +279,15 @@ export function registerShutdownHandlers(options: ShutdownOptions): void {
 
   process.on('SIGINT', handler);
   process.on('SIGTERM', handler);
+}
+
+/**
+ * Convenience wrapper: register both shutdown and SIGHUP reload handlers.
+ */
+export function registerLifecycleHandlers(
+  shutdownOptions: ShutdownOptions,
+  reloadOptions: ReloadOptions = {},
+): void {
+  registerShutdownHandlers(shutdownOptions);
+  registerReloadHandler(reloadOptions);
 }

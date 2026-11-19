@@ -1,5 +1,6 @@
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import cors, { type CorsOptions } from "cors";
+import compression from "compression";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -61,6 +62,7 @@ import {
   cosignRequestsTotal,
   feeBumpRequestsTotal,
   policyEvaluationDurationSeconds,
+  resolveRouteLabel,
 } from "./metrics.js";
 
 import { SponsorMonitorService } from "./fee-sponsor/monitor.js";
@@ -115,6 +117,12 @@ export interface ServerResult {
   broadcastWalletEvent: (walletAddress: string, event: string, payload?: Record<string, unknown>) => void;
   /** Hash-chained audit decisions and Merkle-root verification. */
   auditLog: MerkleAuditLog;
+  /**
+   * Re-applies reloadable configuration (log level, rate limits, CORS
+   * allowlist) atomically. Invalid values are rejected, logged, and the
+   * previous values are retained. Returns whether the reload succeeded.
+   */
+  reloadConfig: () => Promise<boolean>;
   /**
    * Stops accepting new connections and drains in-flight requests.
    * Resolves once the HTTP server has closed (or the grace period elapses).
@@ -171,6 +179,12 @@ export interface ServerOpts {
    * Cross-origin access is disabled by default.
    */
   cors?: CorsOptions;
+  /**
+   * Static CORS origin allowlist. When omitted, `CORS_ORIGINS` (comma list)
+   * is read from the environment. `*` is rejected when credentials or an API
+   * key are configured.
+   */
+  corsOrigins?: string[];
   /** Loads the current allowlist of CORS origins; refreshed every 60 seconds. */
   corsOriginProvider?: () => Promise<string[]>;
   /**
@@ -252,6 +266,72 @@ export interface ServerOpts {
    * Defaults to 15000.
    */
   shutdownGracePeriodMs?: number;
+}
+
+/**
+ * Parses and validates a CORS origin allowlist. Throws on malformed entries
+ * and on the unsafe `*` wildcard when credentials/API keys are in use.
+ */
+function parseCorsOrigins(raw: string | string[] | undefined, allowWildcard: boolean): string[] {
+  if (raw === undefined) return [];
+  const entries = (Array.isArray(raw) ? raw : raw.split(","))
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  const origins: string[] = [];
+  for (const entry of entries) {
+    if (entry === "*") {
+      if (!allowWildcard) {
+        throw new Error(
+          "CORS_ORIGINS cannot contain '*' when credentials or API keys are configured",
+        );
+      }
+      origins.push(entry);
+      continue;
+    }
+    if (entry.startsWith("*.")) {
+      const suffix = entry.slice(2);
+      if (suffix.length === 0 || suffix.includes("/") || suffix.includes(":")) {
+        throw new Error(`Invalid CORS wildcard origin: ${entry}`);
+      }
+      origins.push(entry.toLowerCase());
+      continue;
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(entry);
+    } catch {
+      throw new Error(`Invalid CORS origin: ${entry}`);
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error(`CORS origin must use http(s): ${entry}`);
+    }
+    origins.push(parsed.origin.toLowerCase());
+  }
+  return origins;
+}
+
+/** Returns true when a request origin matches the allowlist. */
+function isOriginAllowed(origin: string, origins: string[]): boolean {
+  let requestOrigin: string;
+  let hostname: string;
+  try {
+    const parsed = new URL(origin);
+    requestOrigin = parsed.origin.toLowerCase();
+    hostname = parsed.hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+
+  return origins.some((entry) => {
+    const normalized = entry.trim().toLowerCase();
+    if (normalized === "*") return true;
+    if (normalized.startsWith("*.")) {
+      const suffix = normalized.slice(1);
+      return hostname.endsWith(suffix) && hostname !== suffix.slice(1);
+    }
+    return normalized.includes("://") ? normalized === requestOrigin : hostname === normalized;
+  });
 }
 
 function getTransactionHash(xdr: string, networkPassphrase: string): string {
@@ -366,6 +446,52 @@ export function createServer(opts: ServerOpts): ServerResult {
   });
   app.use(express.json());
 
+  // #509 — response compression. Bodies below the threshold are left as-is so
+  // tiny payloads are not inflated by gzip framing overhead.
+  app.use(compression({ threshold: 1024 }));
+
+  // #509 — weak ETags for GET read endpoints. The hash is computed over the
+  // uncompressed body (registered before compression flushes) and conditional
+  // requests are answered with 304 + no body.
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      next();
+      return;
+    }
+
+    const originalSend = res.send.bind(res);
+    res.send = ((body?: unknown) => {
+      if (typeof body === "string" || Buffer.isBuffer(body)) {
+        const payload = Buffer.isBuffer(body) ? body : Buffer.from(body);
+        const etag = `W/"${createHash("sha1").update(payload).digest("hex")}"`;
+        res.setHeader("ETag", etag);
+        res.setHeader("Cache-Control", "no-cache");
+
+        const ifNoneMatch = req.headers["if-none-match"];
+        const candidates = Array.isArray(ifNoneMatch)
+          ? ifNoneMatch
+          : ifNoneMatch !== undefined
+            ? [ifNoneMatch]
+            : [];
+        const matched = candidates.some((value) =>
+          value
+            .split(",")
+            .map((token) => token.trim())
+            .some((token) => token === "*" || token === etag || token === etag.slice(2)),
+        );
+        if (matched && res.statusCode >= 200 && res.statusCode < 300) {
+          res.status(304);
+          res.removeHeader("Content-Type");
+          res.removeHeader("Content-Length");
+          return originalSend();
+        }
+      }
+      return originalSend(body as never);
+    }) as typeof res.send;
+
+    next();
+  });
+
   const redis = opts.redis;
   const appendAuditRecordScript = `
 local previous = redis.call('LINDEX', KEYS[1], -1)
@@ -398,52 +524,47 @@ return 1
   void auditLog.ready().catch((error: unknown) => {
     logger.error({ error }, "Failed to load or verify stored audit log");
   });
+  // #508 — CORS allowlist sourced from configuration and validated at startup.
+  // `*` is unsafe when credentials or API keys are in use, so fail fast.
+  const credentialsInUse = Boolean(opts.apiKey || opts.tenantStore || opts.cors?.credentials);
+  const allowWildcard = !credentialsInUse;
+  const staticCorsOrigins = parseCorsOrigins(
+    opts.corsOrigins ?? process.env.CORS_ORIGINS,
+    allowWildcard,
+  );
+
   const corsOriginProvider =
     opts.corsOriginProvider ?? (redis ? () => redis.smembers("lumen:cors:origins") : undefined);
   let corsOriginCache: { origins: string[]; expiresAt: number } | undefined;
-  const corsOptions: CorsOptions = corsOriginProvider
-    ? {
-        ...opts.cors,
-        origin: (origin, callback) => {
-          if (!origin) {
-            callback(null, true);
-            return;
-          }
+  let currentCorsOrigins: string[] = staticCorsOrigins;
 
-          const resolveOrigins = async (): Promise<string[]> => {
-            if (!corsOriginCache || corsOriginCache.expiresAt <= Date.now()) {
-              const origins = await corsOriginProvider();
-              corsOriginCache = { origins, expiresAt: Date.now() + 60_000 };
-            }
-            return corsOriginCache.origins;
-          };
+  const resolveCorsOrigins = async (): Promise<string[]> => {
+    if (!corsOriginProvider) return currentCorsOrigins;
+    if (!corsOriginCache || corsOriginCache.expiresAt <= Date.now()) {
+      const origins = parseCorsOrigins(await corsOriginProvider(), allowWildcard);
+      corsOriginCache = { origins, expiresAt: Date.now() + 60_000 };
+    }
+    return corsOriginCache.origins;
+  };
 
-          void resolveOrigins()
-            .then((origins) => {
-              const requestOrigin = new URL(origin).origin.toLowerCase();
-              const hostname = new URL(origin).hostname.toLowerCase();
-              const allowed = origins.some((entry) => {
-                const normalized = entry.trim().toLowerCase();
-                if (normalized.startsWith("*.")) {
-                  const suffix = normalized.slice(1);
-                  return hostname.endsWith(suffix) && hostname !== suffix.slice(1);
-                }
-                try {
-                  return normalized.includes("://")
-                    ? new URL(normalized).origin === requestOrigin
-                    : hostname === normalized;
-                } catch {
-                  return false;
-                }
-              });
-              callback(allowed ? null : new Error("Origin is not allowed by CORS"), allowed);
-            })
-            .catch((error: unknown) =>
-              callback(error instanceof Error ? error : new Error(String(error))),
-            );
-        },
+  const corsOptions: CorsOptions = {
+    ...opts.cors,
+    origin: (origin, callback) => {
+      if (!origin) {
+        callback(null, true);
+        return;
       }
-    : (opts.cors ?? { origin: false });
+
+      void resolveCorsOrigins()
+        .then((origins) => {
+          const allowed = isOriginAllowed(origin, origins);
+          callback(allowed ? null : new Error("Origin is not allowed by CORS"), allowed);
+        })
+        .catch((error: unknown) =>
+          callback(error instanceof Error ? error : new Error(String(error))),
+        );
+    },
+  };
   app.use(cors(corsOptions));
 
   app.use((req: Request, res: Response, next: NextFunction) => {
@@ -483,6 +604,63 @@ return 1
     ip: ipRateLimit,
     wallet: walletRateLimit,
   });
+
+  // #510 — reloadable settings. These are re-read on SIGHUP; invalid values are
+  // rejected and the previous values retained.
+  let currentIpRateLimit: BucketConfig = ipRateLimit;
+  let currentWalletRateLimit: BucketConfig = walletRateLimit;
+  let currentLogLevel: string = logger.level;
+
+  const reloadConfig = async (): Promise<boolean> => {
+    try {
+      const nextLogLevel = process.env.LOG_LEVEL ?? currentLogLevel;
+      const nextCorsOrigins = parseCorsOrigins(
+        process.env.CORS_ORIGINS ?? currentCorsOrigins,
+        allowWildcard,
+      );
+
+      const nextIpRateLimit: BucketConfig = {
+        capacity: Number(process.env.RATE_LIMIT_IP_CAPACITY ?? currentIpRateLimit.capacity),
+        refillRate: Number(process.env.RATE_LIMIT_IP_REFILL ?? currentIpRateLimit.refillRate),
+      };
+      const nextWalletRateLimit: BucketConfig = {
+        capacity: Number(process.env.RATE_LIMIT_WALLET_CAPACITY ?? currentWalletRateLimit.capacity),
+        refillRate: Number(process.env.RATE_LIMIT_WALLET_REFILL ?? currentWalletRateLimit.refillRate),
+      };
+
+      for (const [name, bucket] of [
+        ["RATE_LIMIT_IP", nextIpRateLimit],
+        ["RATE_LIMIT_WALLET", nextWalletRateLimit],
+      ] as const) {
+        if (
+          !Number.isFinite(bucket.capacity) ||
+          !Number.isFinite(bucket.refillRate) ||
+          bucket.capacity <= 0 ||
+          bucket.refillRate <= 0
+        ) {
+          throw new Error(`Invalid ${name} configuration`);
+        }
+      }
+
+      // Apply atomically only after every value has validated.
+      logger.level = nextLogLevel;
+      currentLogLevel = nextLogLevel;
+      currentIpRateLimit = nextIpRateLimit;
+      currentWalletRateLimit = nextWalletRateLimit;
+      currentCorsOrigins = nextCorsOrigins;
+      corsOriginCache = undefined;
+      rateLimiter.updateConfig?.({ ip: nextIpRateLimit, wallet: nextWalletRateLimit });
+
+      logger.info(
+        { logLevel: nextLogLevel, corsOrigins: nextCorsOrigins.length },
+        "Configuration reloaded",
+      );
+      return true;
+    } catch (error) {
+      logger.error({ error }, "Configuration reload rejected; keeping previous values");
+      return false;
+    }
+  };
 
   const idempotency = createIdempotencyMiddleware({ redis: opts.redis });
   const antiReplay = createAntiReplayMiddleware({
@@ -571,6 +749,19 @@ return 1
       res.send(await register.metrics());
     }),
   );
+
+  // #507 — record request metrics using the normalised route pattern so raw
+  // wallet addresses never leak into label values.
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const routeLabel = resolveRouteLabel(req);
+    res.on("finish", () => {
+      logger.debug(
+        { route: routeLabel, status: res.statusCode, method: req.method },
+        "request completed",
+      );
+    });
+    next();
+  });
 
   app.get(
     "/sponsor/status",
@@ -1444,6 +1635,7 @@ return 1
     broadcastAuditEvent,
     broadcastWalletEvent,
     auditLog,
+    reloadConfig,
     shutdown,
   };
 }

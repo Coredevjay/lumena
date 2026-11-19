@@ -31,6 +31,41 @@ export const logger = pino({
       }),
 });
 
+/** Log levels supported by Pino, used to validate runtime reloads. */
+export const LOG_LEVELS = [
+  'fatal',
+  'error',
+  'warn',
+  'info',
+  'debug',
+  'trace',
+  'silent',
+] as const;
+
+export type LogLevel = (typeof LOG_LEVELS)[number];
+
+/**
+ * Change the logger level at runtime (e.g. on SIGHUP config reload).
+ *
+ * Invalid levels are rejected: a warning is logged and the previous level is
+ * kept so a bad config can never silence or break logging.
+ *
+ * @returns `true` if the level was applied, `false` if it was rejected.
+ */
+export function setLogLevel(level: unknown): boolean {
+  if (typeof level !== 'string' || !(LOG_LEVELS as readonly string[]).includes(level)) {
+    logger.warn(
+      { requestedLevel: level, currentLevel: logger.level, supported: LOG_LEVELS },
+      'Invalid log level requested; keeping current level',
+    );
+    return false;
+  }
+
+  logger.level = level;
+  logger.info({ level }, 'Log level updated');
+  return true;
+}
+
 /**
  * Sanitize an error message for safe inclusion in API responses.
  *

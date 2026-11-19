@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import { resolveDestination } from "@lumen/core";
 import { useLumen } from "./context.js";
 import { useBalance } from "./use-balance.js";
 import { useToast, type ToastContextValue } from "./components/LumenToast.js";
@@ -88,7 +89,12 @@ export function useGaslessTransaction(
       }
 
       try {
-        const result = await client.sendPayment(walletId, destination, assetCode, amount);
+        const result = await client.sendPayment(
+          walletId,
+          await resolveDestination(destination),
+          assetCode,
+          amount
+        );
 
         setData(result);
         await refetch();

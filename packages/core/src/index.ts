@@ -99,6 +99,14 @@ export {
   type PayUriMemoType,
 } from "./stellar/sep7.js";
 export {
+  resolveFederation,
+  resolveDestination,
+  isFederationAddress,
+  clearFederationCache,
+  type FederationRecord,
+  type ResolveFederationOpts,
+} from "./stellar/federation.js";
+export {
   encodeMuxedAddress,
   decodeMuxedAddress,
   resolveBasePublicKey,

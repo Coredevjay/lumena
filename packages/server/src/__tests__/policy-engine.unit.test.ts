@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { PolicyEngine } from "../policy/engine.js";
 import {
   createAllowlistPolicy,
@@ -429,6 +431,55 @@ describe("PolicyEngine Velocity Limits", () => {
       expect(res.approved).toBe(false);
       expect(res.reason).toContain("exceeds limit of 1");
     });
+  });
+});
+
+describe("PolicyEngine documented examples (docs/examples/policy)", () => {
+  const walletId = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+  const examplesDir = join(process.cwd(), "docs", "examples", "policy");
+
+  interface ExampleTransaction {
+    operations: unknown[];
+    timeBounds?: { minTime: string; maxTime: string };
+  }
+
+  interface PolicyExample {
+    ruleType: string;
+    policy: { walletId: string; rules: unknown[] };
+    pass: { transaction: ExampleTransaction; approved: boolean };
+    deny: { transaction: ExampleTransaction; approved: boolean; reasonContains?: string };
+  }
+
+  const exampleFiles = readdirSync(examplesDir).filter((file) => file.endsWith(".json"));
+
+  it("has at least one example file per rule type", () => {
+    expect(exampleFiles.length).toBeGreaterThan(0);
+  });
+
+  it.each(exampleFiles)("validates documented pass/deny outcomes for %s", async (file) => {
+    const example = JSON.parse(
+      readFileSync(join(examplesDir, file), "utf8"),
+    ) as PolicyExample;
+
+    const engine = new PolicyEngine();
+    await engine.addPolicy(example.policy as never);
+
+    const passResult = await engine.evaluate({
+      walletAddress: example.policy.walletId ?? walletId,
+      transaction: example.pass.transaction as unknown as Transaction,
+    });
+    expect(passResult.approved).toBe(example.pass.approved);
+
+    const denyResult = await engine.evaluate({
+      walletAddress: example.policy.walletId ?? walletId,
+      transaction: example.deny.transaction as unknown as Transaction,
+    });
+    expect(denyResult.approved).toBe(example.deny.approved);
+    if (example.deny.reasonContains) {
+      expect(denyResult.approved === false && denyResult.reason).toContain(
+        example.deny.reasonContains,
+      );
+    }
   });
 });
 

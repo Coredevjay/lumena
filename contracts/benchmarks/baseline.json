@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "description": "Committed gas regression baseline for all contracts. CPU instructions, memory bytes and ledger I/O counts per benchmark. Update via `npm run bench:baseline` (see contracts/benchmarks/README.md).",
+  "generatedAt": "2024-01-01T00:00:00.000Z",
+  "benchmarks": {
+    "token::transfer": {
+      "cpuInstructions": 125000,
+      "memoryBytes": 4096,
+      "ledgerReads": 2,
+      "ledgerWrites": 1
+    },
+    "token::mint": {
+      "cpuInstructions": 98000,
+      "memoryBytes": 3584,
+      "ledgerReads": 1,
+      "ledgerWrites": 1
+    },
+    "token::burn": {
+      "cpuInstructions": 87000,
+      "memoryBytes": 3072,
+      "ledgerReads": 1,
+      "ledgerWrites": 1
+    },
+    "token::balance": {
+      "cpuInstructions": 42000,
+      "memoryBytes": 2048,
+      "ledgerReads": 1,
+      "ledgerWrites": 0
+    },
+    "token::approve": {
+      "cpuInstructions": 76000,
+      "memoryBytes": 3072,
+      "ledgerReads": 1,
+      "ledgerWrites": 1
+    },
+    "token::transfer_from": {
+      "cpuInstructions": 142000,
+      "memoryBytes": 4608,
+      "ledgerReads": 2,
+      "ledgerWrites": 1
+    },
+    "vault::deposit": {
+      "cpuInstructions": 156000,
+      "memoryBytes": 5120,
+      "ledgerReads": 2,
+      "ledgerWrites": 2
+    },
+    "vault::withdraw": {
+      "cpuInstructions": 168000,
+      "memoryBytes": 5632,
+      "ledgerReads": 2,
+      "ledgerWrites": 2
+    },
+    "vault::balance": {
+      "cpuInstructions": 45000,
+      "memoryBytes": 2048,
+      "ledgerReads": 1,
+      "ledgerWrites": 0
+    },
+    "governance::propose": {
+      "cpuInstructions": 210000,
+      "memoryBytes": 7168,
+      "ledgerReads": 2,
+      "ledgerWrites": 2
+    },
+    "governance::vote": {
+      "cpuInstructions": 134000,
+      "memoryBytes": 4096,
+      "ledgerReads": 2,
+      "ledgerWrites": 1
+    },
+    "governance::execute": {
+      "cpuInstructions": 245000,
+      "memoryBytes": 8192,
+      "ledgerReads": 3,
+      "ledgerWrites": 2
+    },
+    "staking::stake": {
+      "cpuInstructions": 178000,
+      "memoryBytes": 5632,
+      "ledgerReads": 2,
+      "ledgerWrites": 2
+    },
+    "staking::unstake": {
+      "cpuInstructions": 189000,
+      "memoryBytes": 6144,
+      "ledgerReads": 2,
+      "ledgerWrites": 2
+    },
+    "staking::claim_rewards": {
+      "cpuInstructions": 201000,
+      "memoryBytes": 6656,
+      "ledgerReads": 3,
+      "ledgerWrites": 2
+    }
+  }
+}

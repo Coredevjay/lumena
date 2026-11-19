@@ -48,7 +48,8 @@ export type PolicyRule =
   | FeeLimitRule
   | ContractAllowlistRule
   | ContractInvocationPolicyRule
-  | UsdSpendLimitRule;
+  | UsdSpendLimitRule
+  | SorobanSimulationPolicyRule;
 
 /**
  * Per-asset spend limit.
@@ -265,6 +266,56 @@ export interface UsdSpendLimitRule {
   maxDailyUsd: string;
   /** Assets subject to the USD limit; empty/omitted means all assets. */
   assets?: string[];
+}
+
+/**
+ * Soroban simulation resource limits (#503).
+ *
+ * Before cosigning a Soroban invocation the cosigner calls
+ * `simulateTransaction` and compares the returned resource usage against these
+ * limits. A failed simulation, or a simulation whose resource fee or resource
+ * usage exceeds the configured limits, rejects the transaction.
+ *
+ * Defaults (applied when a field is omitted):
+ * - `maxResourceFeeStroops`: 1_000_000 (0.1 XLM)
+ * - `maxCpuInstructions`: 100_000_000
+ * - `maxMemoryBytes`: 41_943_040 (40 MiB)
+ * - `maxFootprintEntries`: unlimited
+ *
+ * @example
+ * ```ts
+ * const rule: SorobanSimulationPolicyRule = {
+ *   type: "soroban_simulation",
+ *   maxResourceFeeStroops: 500_000,
+ *   maxCpuInstructions: 50_000_000,
+ *   maxMemoryBytes: 20_971_520,
+ *   maxFootprintEntries: 32,
+ * };
+ * ```
+ */
+export interface SorobanSimulationPolicyRule {
+  /** Rule discriminator. */
+  type: "soroban_simulation";
+  /**
+   * Maximum resource fee (in stroops) the simulation may report.
+   * Defaults to 1_000_000 stroops (0.1 XLM).
+   */
+  maxResourceFeeStroops?: number;
+  /**
+   * Maximum CPU instructions the simulation may consume.
+   * Defaults to 100_000_000.
+   */
+  maxCpuInstructions?: number;
+  /**
+   * Maximum memory (in bytes) the simulation may consume.
+   * Defaults to 41_943_040 bytes (40 MiB).
+   */
+  maxMemoryBytes?: number;
+  /**
+   * Maximum number of ledger entries in the simulated read/write footprint.
+   * Omitted means the footprint size is not limited.
+   */
+  maxFootprintEntries?: number;
 }
 
 /**

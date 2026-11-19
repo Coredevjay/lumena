@@ -67,6 +67,28 @@ paths:
           description: Invalid request validation error
         '403':
           description: Transaction denied by policy rules
+        '422':
+          description: >
+            Soroban simulation failed or exceeded the configured resource policy.
+            The transaction is not co-signed. The response body includes the
+            failure reason and, when available, the simulation summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: simulation_failed
+                  reason:
+                    type: string
+                    description: Human-readable reason the simulation was rejected.
+                    example: Resource fee 0.05 XLM exceeds policy limit 0.01 XLM
+                  simulation:
+                    $ref: '#/components/schemas/SimulationSummary'
+                required:
+                  - error
+                  - reason
   /fee-bump:
     post:
       summary: Wrap Fee-Bump Transaction
@@ -374,6 +396,80 @@ paths:
                 $ref: '#/components/schemas/Policy'
         '404':
           description: No policy found for wallet
+  /audit/export:
+    get:
+      summary: Export Audit Log
+      description: >
+        Streams audit log entries as JSONL (default) or CSV, filtered by wallet
+        and date range. The stream is produced with constant memory usage. A
+        manifest containing the Merkle root of the exported entries is emitted
+        so the export can be verified offline.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [jsonl, csv]
+            default: jsonl
+          description: Output serialization format.
+        - name: wallet
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter entries to a single wallet address.
+          example: GAD7654...
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Include entries at or after this timestamp (inclusive).
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Include entries at or before this timestamp (inclusive).
+        - name: manifest
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+          description: >
+            When true, the response trailer includes the manifest as the final
+            line (JSONL) or as a comment row (CSV).
+      responses:
+        '200':
+          description: Streamed audit log export
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: Attachment filename for the export.
+            X-Audit-Merkle-Root:
+              schema:
+                type: string
+              description: Merkle root over the exported entries, for offline verification.
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: One JSON audit entry per line, followed by the manifest line.
+            text/csv:
+              schema:
+                type: string
+                description: CSV rows of audit entries, followed by the manifest row.
+        '400':
+          description: Invalid filter or format parameter
+        '401':
+          description: Missing or invalid API key
   /webhooks:
     get:
       summary: List Webhooks
@@ -523,6 +619,72 @@ components:
       in: header
       name: x-api-key
   schemas:
+    SimulationSummary:
+      type: object
+      description: Summary of a Soroban simulateTransaction result, recorded in the audit log.
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          nullable: true
+          description: Simulation error message, if any.
+        resourceFee:
+          type: string
+          description: Total resource fee in stroops.
+          example: "500000"
+        minResourceFee:
+          type: string
+          description: Minimum resource fee reported by the simulation.
+          example: "480000"
+        instructions:
+          type: integer
+          description: CPU instructions consumed.
+          example: 1250000
+        readBytes:
+          type: integer
+          description: Ledger entry bytes read.
+          example: 4096
+        writeBytes:
+          type: integer
+          description: Ledger entry bytes written.
+          example: 1024
+        footprint:
+          type: object
+          description: Ledger footprint (read-only and read-write keys) from the simulation.
+      required:
+        - success
+        - resourceFee
+    AuditManifest:
+      type: object
+      description: Manifest accompanying an audit export, verifiable offline against the Merkle root.
+      properties:
+        merkleRoot:
+          type: string
+          description: Merkle root over the exported audit entries.
+          example: 9f2c...
+        entryCount:
+          type: integer
+          example: 1024
+        from:
+          type: string
+          format: date-time
+          nullable: true
+        to:
+          type: string
+          format: date-time
+          nullable: true
+        wallet:
+          type: string
+          nullable: true
+        generatedAt:
+          type: string
+          format: date-time
+      required:
+        - merkleRoot
+        - entryCount
+        - generatedAt
     WalletAnalytics:
       type: object
       properties:
@@ -725,3 +887,26 @@ components:
       description: "API key passed in the Authorization: Bearer <api-key> header"
 security:
   - bearerAuth: []
+x-idempotency:
+  description: >
+    Requests may include an `Idempotency-Key` header. Keys are stored for
+    `IDEMPOTENCY_TTL_SECONDS` (default 86400) in the backend selected by
+    `IDEMPOTENCY_STORE` (`memory` or `redis`). Replaying a key with the same
+    request returns the original response; replaying a key with a different
+    request body returns `409 Conflict`. Expired keys are treated as new.
+  header: Idempotency-Key
+  config:
+    IDEMPOTENCY_TTL_SECONDS:
+      type: integer
+      default: 86400
+      description: Time-to-live for stored idempotency keys, in seconds.
+    IDEMPOTENCY_STORE:
+      type: string
+      enum: [memory, redis]
+      default: memory
+      description: Storage backend for idempotency keys.
+  conflict:
+    status: 409
+    description: >
+      An idempotency key was reused with a different request payload, or the
+      original request is still in flight.

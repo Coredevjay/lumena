@@ -43,6 +43,28 @@ export class StellarError extends Error {
   }
 }
 
+export class SimulationError extends Error {
+  statusCode: number;
+  reason: string;
+  code?: string;
+  details?: unknown;
+
+  constructor(
+    message: string,
+    reason: string,
+    statusCode = 422,
+    code?: string,
+    details?: unknown
+  ) {
+    super(message);
+    this.name = "SimulationError";
+    this.statusCode = statusCode;
+    this.reason = reason;
+    this.code = code;
+    this.details = details;
+  }
+}
+
 export type TenantQuotaMetadata = {
   limit: number;
   remaining: number;
@@ -105,6 +127,15 @@ export const errorHandler = (
     return res.status(err.statusCode).json({
       error: err.message,
       details: { limit, remaining, reset, ...(tier ? { tier } : {}) },
+    });
+  }
+
+  if (err instanceof SimulationError) {
+    return res.status(err.statusCode).json({
+      error: err.message,
+      reason: err.reason,
+      ...(err.code ? { code: err.code } : {}),
+      ...(err.details !== undefined ? { details: err.details } : {}),
     });
   }
 

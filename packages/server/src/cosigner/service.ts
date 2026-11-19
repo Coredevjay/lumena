@@ -6,6 +6,7 @@ import {
   Address,
   authorizeEntry,
   hash,
+  Operation,
 } from "@stellar/stellar-sdk";
 import type { Signer } from "@lumen/types";
 import { validateTimeBounds, type StellarClient } from "@lumen/core";
@@ -13,6 +14,32 @@ import type { PolicyEngine } from "../policy/engine.js";
 import type { WebhookDispatcher } from "../webhook/dispatcher.js";
 import { trackOperation } from "../lifecycle.js";
 import type { SequenceAllocator } from "../fee-sponsor/sequence-allocator.js";
+import { SimulationError } from "./errors.js";
+
+/**
+ * Configurable resource limits applied to Soroban simulations before the
+ * co-signer will sign an invocation. Any limit left undefined is not enforced.
+ */
+export interface SimulationLimits {
+  /** Maximum total resource fee (in stroops) the sponsor is willing to pay. */
+  maxResourceFee?: number;
+  /** Maximum CPU instructions the invocation may consume. */
+  maxCpuInstructions?: number;
+  /** Maximum memory (in bytes) the invocation may consume. */
+  maxMemoryBytes?: number;
+  /** Maximum number of ledger entries in the read-write footprint. */
+  maxFootprintEntries?: number;
+}
+
+/** Summary of a successful Soroban simulation, recorded in the audit log. */
+export interface SimulationSummary {
+  minResourceFee: number;
+  cpuInstructions: number;
+  memoryBytes: number;
+  readOnlyFootprintEntries: number;
+  readWriteFootprintEntries: number;
+  latestLedger: number;
+}
 
 export interface CosignerOpts {
   client: StellarClient;
@@ -35,6 +62,11 @@ export interface CosignerOpts {
   maxSequenceRetries?: number;
   /** Base delay (ms) for exponential backoff. Defaults to 100. */
   sequenceRetryBaseDelayMs?: number;
+  /**
+   * Resource limits enforced against Soroban simulations. When omitted, no
+   * limits are enforced beyond the simulation succeeding.
+   */
+  simulationLimits?: SimulationLimits;
 }
 
 /** Horizon result code indicating a sequence number collision. */
@@ -47,6 +79,11 @@ export interface CosignRequest {
   ipAddress?: string;
   /** Optional pre-resolved geo location for the request. */
   geo?: { country?: string; latitude?: number; longitude?: number };
+  /**
+   * Optional per-request overrides for the configured simulation limits.
+   * Only applies to Soroban invocations.
+   */
+  simulationLimits?: SimulationLimits;
 }
 
 export interface CosignResult {
@@ -55,6 +92,8 @@ export interface CosignResult {
   reason?: string;
   code?: string;
   rulesEvaluated?: string[];
+  /** Present when the transaction contained a Soroban invocation. */
+  simulation?: SimulationSummary;
 }
 
 export interface CosignAuthEntryRequest {
@@ -97,6 +136,7 @@ export class CosignerService {
   private sequenceAllocator?: SequenceAllocator;
   private maxSequenceRetries: number;
   private sequenceRetryBaseDelayMs: number;
+  private simulationLimits: SimulationLimits;
 
   constructor(opts: CosignerOpts) {
     this.client = opts.client;
@@ -109,6 +149,7 @@ export class CosignerService {
     this.sequenceAllocator = opts.sequenceAllocator;
     this.maxSequenceRetries = opts.maxSequenceRetries ?? 5;
     this.sequenceRetryBaseDelayMs = opts.sequenceRetryBaseDelayMs ?? 100;
+    this.simulationLimits = opts.simulationLimits ?? {};
   }
 
   get publicKey(): string {
@@ -234,6 +275,43 @@ export class CosignerService {
       };
     }
 
+    // Simulate Soroban invocations before signing so we never sponsor a
+    // transaction that is guaranteed to fail or that exceeds resource policy.
+    let simulation: SimulationSummary | undefined;
+    if (this.isSorobanInvocation(tx)) {
+      const limits = { ...this.simulationLimits, ...request.simulationLimits };
+      try {
+        simulation = await this.simulateSoroban(tx, limits);
+      } catch (err) {
+        if (err instanceof SimulationError) {
+          if (this.webhookDispatcher) {
+            this.webhookDispatcher
+              .dispatch("simulation.failed", {
+                walletAddress: request.walletAddress,
+                reason: err.message,
+                txHash: txHash.toString("hex"),
+              })
+              .catch(() => {});
+          }
+          return {
+            signedXdr: "",
+            approved: false,
+            reason: err.message,
+            code: err.code,
+            rulesEvaluated: policyResult.rulesEvaluated,
+          };
+        }
+        throw err;
+      }
+
+      // Record the simulation summary alongside the audit decision.
+      await this.policyEngine.recordSimulation?.({
+        walletAddress: request.walletAddress,
+        txHash: txHash.toString("hex"),
+        simulation,
+      });
+    }
+
     // Reserve a sequence number for the sponsor account when the transaction
     // is sourced from the sponsor (i.e. the co-signer is the fee sponsor).
     await this.reserveSequenceIfNeeded(tx);
@@ -268,6 +346,95 @@ export class CosignerService {
       signedXdr: tx.toXDR(),
       approved: true,
       rulesEvaluated: policyResult.rulesEvaluated,
+      simulation,
+    };
+  }
+
+  /** Returns true when the transaction contains a Soroban host-function op. */
+  private isSorobanInvocation(tx: Transaction): boolean {
+    return tx.operations.some(
+      (op) => op.type === "invokeHostFunction" || op instanceof Operation.InvokeHostFunction
+    );
+  }
+
+  /**
+   * Simulates a Soroban transaction and enforces the configured resource
+   * limits. Throws a {@link SimulationError} (HTTP 422) when the simulation
+   * fails or any limit is exceeded.
+   */
+  private async simulateSoroban(
+    tx: Transaction,
+    limits: SimulationLimits
+  ): Promise<SimulationSummary> {
+    let response: Awaited<ReturnType<StellarClient["simulateTransaction"]>>;
+    try {
+      response = await this.client.simulateTransaction(tx);
+    } catch (err) {
+      throw new SimulationError(
+        `Soroban simulation failed: ${
+          err instanceof Error ? err.message : "unknown error"
+        }`
+      );
+    }
+
+    if (response.error) {
+      throw new SimulationError(`Soroban simulation failed: ${response.error}`);
+    }
+
+    const minResourceFee = Number(response.minResourceFee ?? 0);
+    const cpuInstructions = Number(
+      response.transactionData?.resources().instructions() ?? 0
+    );
+    const memoryBytes = Number(
+      response.transactionData?.resources().readBytes() ?? 0
+    );
+    const footprint = response.transactionData?.resources().footprint();
+    const readOnlyFootprintEntries = footprint?.readOnly().length ?? 0;
+    const readWriteFootprintEntries = footprint?.readWrite().length ?? 0;
+
+    if (
+      limits.maxResourceFee !== undefined &&
+      minResourceFee > limits.maxResourceFee
+    ) {
+      throw new SimulationError(
+        `Simulation resource fee ${minResourceFee} exceeds policy limit ${limits.maxResourceFee}`
+      );
+    }
+    if (
+      limits.maxCpuInstructions !== undefined &&
+      cpuInstructions > limits.maxCpuInstructions
+    ) {
+      throw new SimulationError(
+        `Simulation CPU instructions ${cpuInstructions} exceed policy limit ${limits.maxCpuInstructions}`
+      );
+    }
+    if (
+      limits.maxMemoryBytes !== undefined &&
+      memoryBytes > limits.maxMemoryBytes
+    ) {
+      throw new SimulationError(
+        `Simulation memory ${memoryBytes} bytes exceeds policy limit ${limits.maxMemoryBytes}`
+      );
+    }
+    if (
+      limits.maxFootprintEntries !== undefined &&
+      readOnlyFootprintEntries + readWriteFootprintEntries >
+        limits.maxFootprintEntries
+    ) {
+      throw new SimulationError(
+        `Simulation footprint of ${
+          readOnlyFootprintEntries + readWriteFootprintEntries
+        } entries exceeds policy limit ${limits.maxFootprintEntries}`
+      );
+    }
+
+    return {
+      minResourceFee,
+      cpuInstructions,
+      memoryBytes,
+      readOnlyFootprintEntries,
+      readWriteFootprintEntries,
+      latestLedger: Number(response.latestLedger ?? 0),
     };
   }
 
@@ -641,6 +808,28 @@ export class CosignerService {
         reason: policyResult.reason,
         rulesEvaluated: policyResult.rulesEvaluated,
       };
+    }
+
+    if (this.isSorobanInvocation(tx)) {
+      const limits = { ...this.simulationLimits, ...request.simulationLimits };
+      try {
+        const simulation = await this.simulateSoroban(tx, limits);
+        await this.policyEngine.recordSimulation?.({
+          walletAddress: request.walletAddress,
+          txHash: txHash.toString("hex"),
+          simulation,
+        });
+      } catch (err) {
+        if (err instanceof SimulationError) {
+          return {
+            approved: false,
+            reason: err.message,
+            code: err.code,
+            rulesEvaluated: policyResult.rulesEvaluated,
+          };
+        }
+        throw err;
+      }
     }
 
     return { approved: true, tx, txHash, rulesEvaluated: policyResult.rulesEvaluated };

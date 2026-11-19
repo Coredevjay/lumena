@@ -176,6 +176,33 @@ export const openApiSpec = {
           "400": { description: "Invalid request validation error" },
           "401": { description: "Missing or invalid tenant API key" },
           "403": { description: "Transaction denied by policy rules" },
+          "422": {
+            description:
+              "Soroban simulation failed or the simulated resource fee exceeds the configured policy. " +
+              "The transaction is not co-signed. The response includes the simulation summary and a machine-readable reason.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    error: { type: "string", example: "Soroban simulation failed" },
+                    code: {
+                      type: "string",
+                      enum: ["SIMULATION_FAILED", "RESOURCE_FEE_EXCEEDED"],
+                      example: "SIMULATION_FAILED",
+                    },
+                    reason: {
+                      type: "string",
+                      description: "Human-readable explanation of the simulation failure.",
+                      example: "HostError: Error(Contract, #1)",
+                    },
+                    simulation: { $ref: "#/components/schemas/SimulationSummary" },
+                  },
+                  required: ["error", "code", "reason"],
+                },
+              },
+            },
+          },
           "429": { $ref: "#/components/responses/QuotaExceeded" },
         },
       },
@@ -711,6 +738,76 @@ export const openApiSpec = {
         },
       },
     },
+    "/audit/export": {
+      get: {
+        summary: "Export Audit Log",
+        description:
+          "Streams audit log entries filtered by wallet and date range as JSONL (default) or CSV. " +
+          "The response is streamed with constant memory usage regardless of result size. " +
+          "A signed manifest containing the Merkle root of the exported entries is returned in the " +
+          "`X-Audit-Manifest` response header (base64url-encoded JSON) so the export can be verified offline.",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: "format",
+            in: "query",
+            required: false,
+            schema: { type: "string", enum: ["jsonl", "csv"], default: "jsonl" },
+            description: "Export serialization format.",
+          },
+          {
+            name: "wallet",
+            in: "query",
+            required: false,
+            schema: { type: "string" },
+            description: "Only export entries for this wallet address.",
+            example: "GAD7654...",
+          },
+          {
+            name: "from",
+            in: "query",
+            required: false,
+            schema: { type: "string", format: "date-time" },
+            description: "Inclusive lower bound on entry timestamp (ISO 8601).",
+          },
+          {
+            name: "to",
+            in: "query",
+            required: false,
+            schema: { type: "string", format: "date-time" },
+            description: "Inclusive upper bound on entry timestamp (ISO 8601).",
+          },
+        ],
+        responses: {
+          "200": {
+            description:
+              "Streaming audit export. The `X-Audit-Manifest` header carries the signed manifest with the Merkle root.",
+            headers: {
+              "X-Audit-Manifest": {
+                description:
+                  "Base64url-encoded JSON manifest containing the Merkle root, entry count, filters, and signature.",
+                schema: { type: "string" },
+              },
+              "Content-Disposition": {
+                description: "Attachment filename for the export.",
+                schema: { type: "string", example: 'attachment; filename="audit-export.jsonl"' },
+              },
+            },
+            content: {
+              "application/x-ndjson": {
+                schema: { type: "string", description: "One JSON audit entry per line." },
+              },
+              "text/csv": {
+                schema: { type: "string", description: "CSV rows with a header line." },
+              },
+            },
+          },
+          "400": { description: "Invalid filter or format parameter" },
+          "401": { description: "Missing or invalid tenant API key" },
+          "429": { $ref: "#/components/responses/QuotaExceeded" },
+        },
+      },
+    },
     "/webhooks": {
       get: {
         summary: "List Webhooks",
@@ -1131,6 +1228,63 @@ export const openApiSpec = {
           },
         },
         required: ["type", "allowedContracts"],
+      },
+      SimulationSummary: {
+        type: "object",
+        description:
+          "Summary of a Soroban `simulateTransaction` result, recorded in the audit log for co-signed invocations.",
+        properties: {
+          success: { type: "boolean", example: true },
+          error: {
+            type: "string",
+            nullable: true,
+            description: "Simulation error message when success is false.",
+            example: "HostError: Error(Contract, #1)",
+          },
+          resourceFee: {
+            type: "string",
+            description: "Simulated resource fee in stroops.",
+            example: "12345",
+          },
+          minResourceFee: {
+            type: "string",
+            description: "Minimum resource fee reported by the simulation, in stroops.",
+            example: "12000",
+          },
+          instructions: { type: "integer", example: 1500000 },
+          readBytes: { type: "integer", example: 2048 },
+          writeBytes: { type: "integer", example: 512 },
+          footprint: {
+            type: "object",
+            description: "Ledger keys touched by the invocation (read-only and read-write).",
+            properties: {
+              readOnly: { type: "array", items: { type: "string" } },
+              readWrite: { type: "array", items: { type: "string" } },
+            },
+          },
+        },
+        required: ["success"],
+      },
+      AuditManifest: {
+        type: "object",
+        description:
+          "Signed manifest describing an audit export. Verifiable offline by recomputing the Merkle root over the exported entries.",
+        properties: {
+          version: { type: "integer", example: 1 },
+          merkleRoot: { type: "string", description: "Hex-encoded Merkle root of exported entries." },
+          entryCount: { type: "integer", example: 42 },
+          filters: {
+            type: "object",
+            properties: {
+              wallet: { type: "string", nullable: true },
+              from: { type: "string", format: "date-time", nullable: true },
+              to: { type: "string", format: "date-time", nullable: true },
+            },
+          },
+          generatedAt: { type: "string", format: "date-time" },
+          signature: { type: "string", description: "Signature over the manifest payload." },
+        },
+        required: ["version", "merkleRoot", "entryCount", "generatedAt", "signature"],
       },
       Policy: {
         type: "object",

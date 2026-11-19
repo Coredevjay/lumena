@@ -14,10 +14,12 @@ production with real user funds.
 5. [Other HSM options](#5-other-hsm-options)
 6. [Key rotation policy](#6-key-rotation-policy)
 7. [Blast-radius capping for the fee-sponsor account](#7-blast-radius-capping-for-the-fee-sponsor-account)
-8. [Least-privilege IAM policy (AWS)](#8-least-privilege-iam-policy-aws)
-9. [Audit logging](#9-audit-logging)
-10. [Incident response checklist](#10-incident-response-checklist)
-11. [Production checklist](#11-production-checklist)
+8. [Sponsor account rotation and drain mode](#8-sponsor-account-rotation-and-drain-mode)
+9. [Soroban simulation pre-flight checks](#9-soroban-simulation-pre-flight-checks)
+10. [Least-privilege IAM policy (AWS)](#10-least-privilege-iam-policy-aws)
+11. [Audit logging](#11-audit-logging)
+12. [Incident response checklist](#12-incident-response-checklist)
+13. [Production checklist](#13-production-checklist)
 
 ---
 
@@ -28,7 +30,7 @@ The Lumen server holds two custodial keys:
 | Key | What it can do if stolen |
 |---|---|
 | **Co-signer** (`COSIGNER_SECRET` / `KMS_COSIGNER_KEY_ID`) | Co-sign arbitrary user transactions that pass policy checks.  An attacker could drain every wallet Lumen manages without the user's device key—if they also steal the user device key—or, with a malicious policy override, bypass spend limits entirely. |
-| **Fee-payer** (`FEE_PAYER_SECRET` / `KMS_FEE_PAYER_KEY_ID`) | Submit fee-bumped transactions, spending XLM from the fee-payer account.  An attacker can drain the entire XLM balance held there. |
+| **Fee-payer** (`FEE_PAYER_SECRET` / `KMS_FEE_PAYER_KEY_ID`, or a sponsor pool — see §8) | Submit fee-bumped transactions, spending XLM from the fee-payer account(s).  An attacker can drain the entire XLM balance held in the sponsor pool. |
 
 Both keys are therefore **high-value custodial secrets**.  They must never
 appear in application logs, crash dumps, environment variables in plain text
@@ -552,13 +554,20 @@ node -e "const { Keypair } = require('@stellar/stellar-sdk'); \
 
 ### Fee-payer key
 
-1. Generate a new keypair / KMS key.
-2. Transfer the XLM balance from the old account to the new account.
-   Leave a small reserve (~1 XLM) on the old account until all pending
-   fee-bumps have settled.
-3. Update `FEE_PAYER_SECRET` or `KMS_FEE_PAYER_KEY_ID` and deploy.
-4. Verify by submitting a test transaction.
-5. Merge or retire the old account after the reserve window.
+With a single sponsor account, rotation requires a maintenance window.  In
+production, run a **sponsor pool** instead (see §8) so rotation happens without
+downtime:
+
+1. Generate a new keypair / KMS key and add it to the sponsor pool with a
+   weight of `0` (it receives no traffic yet).
+2. Fund the new account and verify it can submit a test fee-bump.
+3. Raise the new sponsor's weight and put the old sponsor into **drain mode**
+   (see §8.3).  Drain mode stops new selections while allowing in-flight
+   fee-bumps to settle.
+4. Once the old sponsor's pending submissions reach zero, transfer the
+   remaining XLM balance to the new account, leaving a small reserve
+   (~1 XLM) until the drain window closes.
+5. Remove the old sponsor from the pool, deploy, and retire the account.
 
 ---
 
@@ -623,7 +632,120 @@ sponsor malicious accounts.
 
 ---
 
-## 8. Least-privilege IAM policy (AWS)
+## 8. Sponsor account rotation and drain mode
+
+A single `FEE_PAYER_SECRET` is a single point of failure: rotating it requires
+a deploy, and a compromised key drains the whole float.  Lumen therefore
+supports a **pool of sponsor accounts** with weighted selection and a drain
+mode for zero-downtime rotation.
+
+### 8.1 Configuration
+
+Sponsors are configured as a list.  Each entry has a signer (env secret or KMS
+key), a weight, and an optional `draining` flag:
+
+```bash
+# Comma-separated sponsor definitions: <id>:<weight>[:draining]
+FEE_PAYER_SPONSORS=sponsor-a:70,sponsor-b:30
+# Per-sponsor signer configuration (env provider shown; KMS keys work too)
+FEE_PAYER_SPONSOR_A_SECRET=SXXXXX...
+FEE_PAYER_SPONSOR_B_SECRET=SXXXXX...
+```
+
+When `FEE_PAYER_SPONSORS` is unset, the server falls back to the legacy single
+`FEE_PAYER_SECRET` / `KMS_FEE_PAYER_KEY_ID` configuration.
+
+### 8.2 Selection strategy
+
+Selection is **weighted random** over the set of sponsors that are *eligible*:
+
+1. A sponsor is eligible if it is **not draining** and its weight is `> 0`.
+2. Eligible sponsors are selected with probability proportional to their
+   weight: `P(i) = weight_i / Σ weight_j` over eligible sponsors `j`.
+3. If no sponsor is eligible (all draining or all weights zero), the request
+   fails with `503 Service Unavailable` rather than silently falling back —
+   this prevents an operator from accidentally draining the pool to empty.
+4. Selection is per fee-bump submission, not sticky per wallet, so load
+   spreads evenly across the pool.
+
+Weighted random (rather than round-robin) keeps the distribution stable when
+sponsors are added or removed mid-flight and avoids thundering-herd effects on
+a single account after a rotation.
+
+### 8.3 Drain mode
+
+Setting `draining` on a sponsor removes it from selection **immediately** but
+keeps its signer loaded so that:
+
+- fee-bumps already built against that sponsor can still be signed and
+  submitted, and
+- the account's balance can be swept once pending submissions reach zero.
+
+Drain mode is the supported way to rotate a sponsor without downtime:
+
+```bash
+# sponsor-a is being retired; sponsor-b takes all new traffic
+FEE_PAYER_SPONSORS=sponsor-a:0:draining,sponsor-b:100
+```
+
+Operational sequence:
+
+1. Set the retiring sponsor to `draining` (weight is ignored while draining).
+2. Confirm new fee-bumps are landing on the remaining sponsors (audit log
+   `feeBump.submitted` entries carry the sponsor id).
+3. Wait for the drain window (at least the maximum fee-bump timebound, e.g.
+   60 seconds) so in-flight submissions settle.
+4. Sweep the remaining balance to a treasury or the new sponsor, then remove
+   the entry and redeploy.
+
+Drain mode is covered by an automated test that asserts a draining sponsor is
+never selected while still being able to sign in-flight transactions.
+
+---
+
+## 9. Soroban simulation pre-flight checks
+
+Cosigning a Soroban invocation that will fail wastes sponsor fees and can
+expose an unexpected footprint (extra ledger entries, larger resource usage
+than the policy allows).  Before cosigning any Soroban transaction, the server
+calls `simulateTransaction` and rejects the request if the simulation fails or
+exceeds policy.
+
+### 9.1 Behaviour
+
+1. The transaction is simulated against the configured RPC endpoint.
+2. If the simulation returns an error, the request is rejected with
+   **HTTP 422** and a `reason` describing the simulation failure (e.g.
+   `simulation failed: host function trapped`).
+3. If the simulated resource fee exceeds the configured policy limit, the
+   request is rejected with **HTTP 422** and a `reason` such as
+   `resource fee 12345 stroops exceeds limit 10000`.
+4. On success, the simulation summary (resource fee, CPU instructions, ledger
+   read/write bytes, footprint entry counts) is attached to the audit record
+   for the cosign (see §11).
+
+### 9.2 Configuring resource limits
+
+Resource limits are configurable via environment variables:
+
+```bash
+# Maximum resource fee (in stroops) the sponsor will pay for a Soroban tx
+SOROBAN_MAX_RESOURCE_FEE=100000
+
+# Optional per-resource caps (unset = no cap beyond the fee limit)
+SOROBAN_MAX_CPU_INSN=100000000
+SOROBAN_MAX_READ_BYTES=200000
+SOROBAN_MAX_WRITE_BYTES=100000
+SOROBAN_MAX_FOOTPRINT_ENTRIES=64
+```
+
+Set these conservatively: the fee cap is the primary blast-radius control for
+Soroban traffic, and the per-resource caps protect against transactions that
+fit the fee budget but request an unexpectedly large footprint.
+
+---
+
+## 10. Least-privilege IAM policy (AWS)
 
 Attach this policy to the ECS task role / Lambda execution role.  It allows
 signing only, using only the two named keys, and nothing else.
@@ -653,7 +775,7 @@ any `kms:*` wildcard.  The server only needs to sign.
 
 ---
 
-## 9. Audit logging
+## 11. Audit logging
 
 Every co-sign and fee-bump request should produce a structured audit log entry.
 At minimum, log:
@@ -673,6 +795,26 @@ At minimum, log:
 
 Rejected requests should log `"event": "cosign.rejected"` with the `reason` field.
 
+For Soroban transactions, the approved entry also carries the simulation
+summary produced by the pre-flight check (§9):
+
+```json
+{
+  "event": "cosign.approved",
+  "transactionHash": "abc123...",
+  "simulation": {
+    "resourceFee": "12345",
+    "cpuInsns": "4500000",
+    "readBytes": "12000",
+    "writeBytes": "3400",
+    "footprintEntries": 7
+  }
+}
+```
+
+Fee-bump submissions log `"event": "feeBump.submitted"` with the selected
+`sponsorId` so sponsor rotation and drain mode can be audited (§8).
+
 Ship these logs to an immutable store (CloudWatch Logs with a retention policy
 and no-delete SCPs, S3 Object Lock, etc.) so they can be used for incident
 forensics.
@@ -689,7 +831,7 @@ aws cloudtrail update-trail \
 
 ---
 
-## 10. Incident response checklist
+## 12. Incident response checklist
 
 If you suspect either key has been compromised:
 
@@ -703,9 +845,11 @@ If you suspect either key has been compromised:
    co-signed transactions in the recent ledger history.  Use Horizon's
    `GET /accounts/{id}/transactions` to audit.
 
-3. **For the fee-payer key:**  Check the fee-payer account for unusual outbound
-   payments.  If XLM has been drained, merge remaining balance out and retire
-   the account.
+3. **For a fee-payer key:**  Put the affected sponsor into drain mode
+   immediately (§8.3) so it stops receiving new traffic, then check the account
+   for unusual outbound payments.  If XLM has been drained, merge remaining
+   balance out and retire the account.  If the pool is left with no eligible
+   sponsors, fund and enable a replacement before clearing drain mode.
 
 4. **Notify affected users** per your disclosure policy.
 
@@ -716,7 +860,7 @@ If you suspect either key has been compromised:
 
 ---
 
-## 11. Production checklist
+## 13. Production checklist
 
 Before going live with real user funds:
 
@@ -729,6 +873,10 @@ Before going live with real user funds:
 - [ ] CloudTrail is enabled and log file validation is on
 - [ ] Structured audit logs are shipped to an immutable store
 - [ ] Fee-payer balance cap is configured with automated top-up
+- [ ] Sponsor pool (`FEE_PAYER_SPONSORS`) is configured with weights, and the
+      rotation/drain procedure (§8) has been rehearsed
+- [ ] Soroban resource limits (`SOROBAN_MAX_RESOURCE_FEE` and optional
+      per-resource caps, §9) are set and reviewed
 - [ ] Low-balance and anomalous-volume alerts are active
 - [ ] Key rotation schedule is documented and rehearsed
 - [ ] Incident response runbook (§10) has been reviewed by the team

@@ -89,6 +89,38 @@ sequenceDiagram
   FS-->>C: hash, feeBumpHash
 ```
 
+## Sponsor Account Rotation
+
+The fee payer is not a single secret. The server supports a pool of sponsor accounts, each configured with its own signer and a selection weight. This allows sponsor keys to be rotated without downtime.
+
+### Weighted Selection Strategy
+
+Each sponsor account in the pool has an integer \`weight\` (default \`1\`). When a fee-bump needs a fee payer, the server selects an account using weighted random selection:
+
+- An account with weight \`w\` is chosen with probability \`w / sum(weights of eligible accounts)\`.
+- Accounts with weight \`0\` are never selected.
+- Only **eligible** accounts participate in the draw. An account is eligible when it is not draining and its signer is available.
+
+Weighted selection spreads load across sponsors in proportion to their configured capacity, so a newly added account can be ramped up gradually (e.g. weight \`1\` alongside an existing account at weight \`9\`) and an account being retired can be ramped down before draining.
+
+### Drain Mode
+
+An account can be marked as **draining**. Draining semantics:
+
+- A draining account is excluded from weighted selection, so it receives **no new** fee-bump work.
+- Transactions already in flight on that account (reserved sequence numbers, submitted envelopes awaiting confirmation) are allowed to complete normally.
+- Once the account has no in-flight transactions, it can be removed from the pool and its key retired.
+
+This makes rotation safe: add the new account, ramp its weight up, mark the old account draining, wait for in-flight work to settle, then remove it. At no point does a client see a failed submission because a sponsor key was swapped out.
+
+### Rotation Runbook
+
+1. Add the new sponsor account to the pool with a low weight.
+2. Increase its weight while decreasing the old account's weight.
+3. Mark the old account draining (it stops receiving new work).
+4. Wait for the old account's in-flight transactions to complete.
+5. Remove the old account from the pool and retire its key.
+
 ## On-Chain Paymaster Contract
 
 While the fee-bump flow above sponsors classic Stellar transaction envelope fees off-chain, Soroban contract invocations consume CPU and memory resource fees that are better handled on-chain. The Paymaster contract (located in \`contracts/paymaster/\`) provides an on-contract fee credit ledger that lets dApps sponsor Soroban contract user invocations.

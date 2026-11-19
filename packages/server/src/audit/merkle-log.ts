@@ -1,5 +1,19 @@
 import { createHash } from "node:crypto";
 
+export interface SimulationFootprintEntry {
+  type: string;
+  value: string;
+}
+
+export interface SimulationSummary {
+  successful: boolean;
+  minResourceFee: string;
+  cpuInstructions: string;
+  memoryBytes: string;
+  footprint: readonly SimulationFootprintEntry[];
+  error?: string;
+}
+
 export interface AuditRecord {
   prevHash: string;
   timestamp: string;
@@ -7,6 +21,7 @@ export interface AuditRecord {
   walletAddress: string;
   decision: "approved" | "rejected";
   rulesEvaluated: readonly string[];
+  simulation?: SimulationSummary;
   hash: string;
 }
 
@@ -16,11 +31,51 @@ export interface AuditDecision {
   walletAddress: string;
   decision: "approved" | "rejected";
   rulesEvaluated: string[];
+  simulation?: SimulationSummary;
 }
 
 export interface AuditLogStorage {
   load(): Promise<AuditRecord[]>;
   append(record: AuditRecord): Promise<boolean>;
+}
+
+function parseSimulationSummary(value: unknown): SimulationSummary {
+  if (!value || typeof value !== "object") {
+    throw new Error("Stored audit record has an invalid simulation summary");
+  }
+  const summary = value as Record<string, unknown>;
+  if (
+    typeof summary.successful !== "boolean" ||
+    typeof summary.minResourceFee !== "string" ||
+    typeof summary.cpuInstructions !== "string" ||
+    typeof summary.memoryBytes !== "string" ||
+    !Array.isArray(summary.footprint) ||
+    !summary.footprint.every(
+      (entry) =>
+        entry &&
+        typeof entry === "object" &&
+        typeof (entry as Record<string, unknown>).type === "string" &&
+        typeof (entry as Record<string, unknown>).value === "string",
+    ) ||
+    (summary.error !== undefined && typeof summary.error !== "string")
+  ) {
+    throw new Error("Stored audit record has an invalid simulation summary");
+  }
+  return Object.freeze({
+    successful: summary.successful,
+    minResourceFee: summary.minResourceFee,
+    cpuInstructions: summary.cpuInstructions,
+    memoryBytes: summary.memoryBytes,
+    footprint: Object.freeze(
+      summary.footprint.map((entry) =>
+        Object.freeze({
+          type: (entry as SimulationFootprintEntry).type,
+          value: (entry as SimulationFootprintEntry).value,
+        }),
+      ),
+    ),
+    ...(summary.error !== undefined ? { error: summary.error } : {}),
+  });
 }
 
 export function parseAuditRecord(raw: string): AuditRecord {
@@ -48,6 +103,9 @@ export function parseAuditRecord(raw: string): AuditRecord {
     walletAddress: record.walletAddress,
     decision: record.decision,
     rulesEvaluated: Object.freeze([...record.rulesEvaluated]),
+    ...(record.simulation !== undefined
+      ? { simulation: parseSimulationSummary(record.simulation) }
+      : {}),
     hash: record.hash,
   });
 }
@@ -93,6 +151,9 @@ export class MerkleAuditLog {
           walletAddress: decision.walletAddress,
           decision: decision.decision,
           rulesEvaluated: Object.freeze([...decision.rulesEvaluated]),
+          ...(decision.simulation !== undefined
+            ? { simulation: parseSimulationSummary(decision.simulation) }
+            : {}),
         };
         const record = Object.freeze({ ...data, hash: hashRecord(data) });
         if (!this.storage || (await this.storage.append(record))) {

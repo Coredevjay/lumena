@@ -88,7 +88,35 @@ model TransactionAudit {
   @@index([walletId, createdAt])
   @@index([transactionId])
   @@index([decision])
+  // Supports streaming audit exports filtered by wallet and date range
+  // (GET /audit/export). The composite index allows an index-only range scan
+  // ordered by createdAt so exports can be paginated with constant memory.
+  @@index([createdAt])
+  @@index([walletId, createdAt, id])
   @@map("transaction_audits")
+}
+
+/// A signed manifest describing an audit log export.
+///
+/// The manifest captures the filter parameters used for the export, the
+/// Merkle root over the exported records, and a signature so compliance
+/// teams can verify the export offline without access to the server.
+model AuditExport {
+  id           String   @id @default(uuid())
+  walletId     String?
+  fromDate     DateTime?
+  toDate       DateTime?
+  format       String   @default("jsonl")
+  recordCount  Int      @default(0)
+  merkleRoot   String
+  signature    String
+  signerKeyId  String?
+  createdAt    DateTime @default(now())
+
+  @@index([walletId])
+  @@index([createdAt])
+  @@index([walletId, createdAt])
+  @@map("audit_exports")
 }
 
 /// A webhook subscription for receiving policy/audit events.

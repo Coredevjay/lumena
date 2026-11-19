@@ -49,6 +49,16 @@ export {
 } from "./middleware/anti-replay.js";
 export { MerkleAuditLog, type AuditDecision, type AuditRecord } from "./audit/merkle-log.js";
 export {
+  createAuditExportHandler,
+  streamAuditExport,
+  buildAuditExportManifest,
+  verifyAuditExportManifest,
+  type AuditExportFormat,
+  type AuditExportFilters,
+  type AuditExportManifest,
+  type AuditExportHandlerOpts,
+} from "./audit/export.js";
+export {
   rbacMiddleware,
   requirePermission,
   hasPermission,

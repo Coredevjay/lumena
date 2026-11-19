@@ -120,6 +120,39 @@ export interface WebhookDispatcherOpts {
   retryDelaysMs?: readonly number[];
   /** Maximum number of delivery log entries to retain. Defaults to 500. */
   maxDeliveryLogSize?: number;
+  /**
+   * Optional dead-letter repository used to list and replay permanently
+   * failed deliveries. When omitted, DLQ inspection falls back to the
+   * delivery log (entries marked `deadLettered`).
+   */
+  deadLetterRepository?: WebhookDeadLetterRepository;
+}
+
+/**
+ * A single dead-lettered webhook delivery as exposed to operators.
+ */
+export interface WebhookDeadLetterRecord {
+  id: string;
+  deliveryId: string;
+  webhookId: string;
+  url: string;
+  event: WebhookEventType;
+  attempt: number;
+  error?: string;
+  statusCode?: number;
+  timestamp: string;
+  deadLetteredAt: string;
+  data: unknown;
+}
+
+/**
+ * Minimal structural interface for a dead-letter store. Implementations
+ * persist failed deliveries so operators can inspect and replay them.
+ */
+export interface WebhookDeadLetterRepository {
+  list(limit: number, offset: number): Promise<WebhookDeadLetterRecord[]>;
+  get(id: string): Promise<WebhookDeadLetterRecord | null>;
+  remove?(id: string): Promise<void>;
 }
 
 export class WebhookDispatcher {
@@ -136,6 +169,7 @@ export class WebhookDispatcher {
   private readonly queue?: WebhookQueueLike;
   private readonly deadLetterQueue?: WebhookQueueLike;
   private readonly retryDelaysMs: readonly number[];
+  private readonly deadLetterRepository?: WebhookDeadLetterRepository;
 
   constructor(opts: WebhookDispatcherOpts = {}) {
     this.timeoutMs = opts.timeoutMs ?? 5000;
@@ -152,6 +186,7 @@ export class WebhookDispatcher {
     this.queue = opts.queue;
     this.deadLetterQueue = opts.deadLetterQueue;
     this.retryDelaysMs = opts.retryDelaysMs ?? WEBHOOK_RETRY_DELAYS_MS;
+    this.deadLetterRepository = opts.deadLetterRepository;
 
     if (opts.webhooks) {
       for (const wh of opts.webhooks) {
@@ -327,6 +362,138 @@ export class WebhookDispatcher {
     }
 
     return record;
+  }
+
+  /**
+   * List dead-lettered deliveries, newest first, for operator inspection.
+   * Delegates to the configured repository when present; otherwise derives
+   * the list from the delivery log.
+   */
+  async listDeadLetters(limit = 50, offset = 0): Promise<WebhookDeadLetterRecord[]> {
+    const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 50;
+    const safeOffset = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 0;
+
+    if (this.deadLetterRepository) {
+      return this.deadLetterRepository.list(safeLimit, safeOffset);
+    }
+
+    const entries = await this.getDeliveryLog();
+    return entries
+      .filter((entry) => entry.deadLettered === true)
+      .map((entry) => this.toDeadLetterRecord(entry))
+      .sort((a, b) => b.deadLetteredAt.localeCompare(a.deadLetteredAt))
+      .slice(safeOffset, safeOffset + safeLimit);
+  }
+
+  /**
+   * Replay a dead-lettered delivery. The payload is re-signed with the
+   * webhook's *current* secret before being re-dispatched, so rotated
+   * secrets are honoured. Returns the delivery result, or `null` when the
+   * dead-letter entry or its webhook can no longer be found.
+   */
+  async replayDeadLetter(id: string): Promise<WebhookDeliveryRecord | null> {
+    const deadLetter = await this.findDeadLetter(id);
+    if (!deadLetter) {
+      return null;
+    }
+
+    const webhook = this.webhooks.get(deadLetter.webhookId);
+    if (!webhook) {
+      logger.warn(
+        { deadLetterId: id, webhookId: deadLetter.webhookId },
+        "Cannot replay dead-letter: webhook no longer registered",
+      );
+      return null;
+    }
+
+    const payload: WebhookPayload<unknown> = {
+      id: deadLetter.deliveryId,
+      event: deadLetter.event,
+      timestamp: deadLetter.timestamp,
+      data: deadLetter.data,
+    };
+
+    // Re-sign with the webhook's current secret. `attemptDelivery` derives the
+    // signature from `webhook.secret` via `generateSignature`, guaranteeing the
+    // replay is signed with the up-to-date secret rather than the stale one
+    // captured when the delivery originally failed.
+    const result = await this.attemptDelivery(webhook, payload, 1);
+
+    const record: WebhookDeliveryRecord = {
+      deliveryId: deadLetter.deliveryId,
+      webhookId: webhook.id,
+      url: webhook.url,
+      event: deadLetter.event,
+      attempt: 1,
+      success: result.success,
+      statusCode: result.statusCode,
+      error: result.error,
+      timestamp: payload.timestamp,
+      deliveredAt: new Date().toISOString(),
+      data: payload.data,
+      deadLettered: false,
+    };
+
+    await this.persistDeliveryLog([
+      {
+        webhookId: record.webhookId,
+        url: record.url,
+        success: record.success,
+        statusCode: record.statusCode,
+        attempts: record.attempt,
+        error: record.error,
+        deliveryId: record.deliveryId,
+        event: record.event,
+        timestamp: record.timestamp,
+        deliveredAt: record.deliveredAt,
+        data: record.data,
+      },
+    ]);
+
+    if (result.success) {
+      if (this.deadLetterRepository?.remove) {
+        try {
+          await this.deadLetterRepository.remove(id);
+        } catch (err: unknown) {
+          logger.error(
+            { error: err, deadLetterId: id },
+            "Failed to remove replayed dead-letter entry",
+          );
+        }
+      }
+    } else {
+      await this.routeToDeadLetter(record, result.error);
+    }
+
+    return record;
+  }
+
+  private async findDeadLetter(id: string): Promise<WebhookDeadLetterRecord | null> {
+    if (this.deadLetterRepository) {
+      return this.deadLetterRepository.get(id);
+    }
+
+    const entries = await this.getDeliveryLog();
+    const entry = entries.find(
+      (candidate) => candidate.deadLettered === true && candidate.deliveryId === id,
+    );
+    return entry ? this.toDeadLetterRecord(entry) : null;
+  }
+
+  private toDeadLetterRecord(entry: WebhookDeliveryLogEntry): WebhookDeadLetterRecord {
+    return {
+      id: entry.deliveryId,
+      deliveryId: entry.deliveryId,
+      webhookId: entry.webhookId,
+      url: entry.url,
+      event: entry.event,
+      attempt: entry.attempts,
+      error: entry.error,
+      statusCode: entry.statusCode,
+      timestamp: entry.timestamp,
+      deadLetteredAt: entry.deliveredAt,
+      data: entry.data,
+    };
   }
 
   async getDeliveryLog(): Promise<WebhookDeliveryLogEntry[]> {

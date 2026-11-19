@@ -32,6 +32,39 @@ Each request carries the following headers:
 - Delivery is at-least-once: the same `id` may be delivered more than once.
 - Subscribing to `*` delivers every event type.
 
+## Dead-letter queue
+
+Deliveries that exhaust their retries are moved to the dead-letter queue (DLQ). Operators with the admin role can inspect and replay them. Both endpoints require admin RBAC; requests from other roles are rejected with `403`.
+
+### `GET /webhooks/dlq`
+
+Lists the failed deliveries currently in the dead-letter queue.
+
+```json
+{
+  "items": [
+    {
+      "id": "5f0c6d2e-3b1a-4c8e-9d7f-1a2b3c4d5e6f",
+      "event": "wallet.created",
+      "endpointId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+      "attempts": 6,
+      "lastError": "Request timed out after 5000 ms",
+      "failedAt": "2026-01-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+### `POST /webhooks/dlq/:id/replay`
+
+Re-enqueues a dead-lettered delivery for another attempt.
+
+- The payload is re-signed with the **current** webhook secret, so the `X-Lumen-Signature` header reflects the secret in effect at replay time rather than the one used for the original delivery.
+- The original delivery `id` is preserved, so consumers can continue to deduplicate on `X-Lumen-Delivery`.
+- Each replay writes an audit entry recording the acting operator, the delivery id and the time of the replay.
+- Responds with `404` when no dead-lettered delivery matches `:id`.
+=======
+
 ## Event types
 
 ### `wallet.created`

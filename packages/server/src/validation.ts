@@ -134,6 +134,59 @@ export const WebhookPatchSchema = z
 export type WebhookPatch = z.infer<typeof WebhookPatchSchema>;
 
 /**
+ * Maximum serialized size (in bytes) of a wallet's `metadata` object.
+ */
+export const WALLET_METADATA_MAX_BYTES = 4096;
+
+/**
+ * Schema for PATCH /wallets/:address — all fields are optional.
+ * At least one field must be present.
+ */
+export const WalletPatchSchema = z
+  .object({
+    label: z
+      .string()
+      .max(128, "label must be at most 128 characters")
+      .optional(),
+    tags: z
+      .array(
+        z
+          .string()
+          .min(1, "tag must not be empty")
+          .max(64, "tag must be at most 64 characters")
+          .regex(
+            /^[a-zA-Z0-9._:-]+$/,
+            "tag may only contain letters, digits, '.', '_', ':' and '-'",
+          ),
+      )
+      .max(20, "at most 20 tags are allowed")
+      .optional(),
+    metadata: z
+      .record(z.string(), z.unknown())
+      .refine(
+        (val) => Buffer.byteLength(JSON.stringify(val), "utf8") <= WALLET_METADATA_MAX_BYTES,
+        {
+          message: `metadata must be at most ${WALLET_METADATA_MAX_BYTES} bytes when serialized`,
+        },
+      )
+      .optional(),
+  })
+  .refine((data) => Object.keys(data).length > 0, {
+    message: "At least one field (label, tags, or metadata) must be provided",
+  });
+
+export type WalletPatch = z.infer<typeof WalletPatchSchema>;
+
+/**
+ * Schema for GET /wallets — optional tag filter.
+ */
+export const WalletListQuerySchema = z.object({
+  tag: z.string().min(1, "tag must not be empty").optional(),
+});
+
+export type WalletListQuery = z.infer<typeof WalletListQuerySchema>;
+
+/**
  * Schema for GET /auth/challenge?account=<publicKey> — SEP-10 challenge request.
  */
 export const Sep10ChallengeQuerySchema = z.object({

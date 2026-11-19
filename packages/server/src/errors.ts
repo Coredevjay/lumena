@@ -43,6 +43,20 @@ export class StellarError extends Error {
   }
 }
 
+export class ClockSkewError extends Error {
+  statusCode: number;
+  code: string;
+  details?: unknown;
+
+  constructor(message: string, details?: unknown, statusCode = 400, code = "CLOCK_SKEW") {
+    super(message);
+    this.name = "ClockSkewError";
+    this.statusCode = statusCode;
+    this.code = code;
+    this.details = details;
+  }
+}
+
 export type TenantQuotaMetadata = {
   limit: number;
   remaining: number;
@@ -87,6 +101,14 @@ export const errorHandler = (
     return res.status(err.statusCode).json({
       error: err.message,
       ...(err.code ? { code: err.code } : {}),
+    });
+  }
+
+  if (err instanceof ClockSkewError) {
+    return res.status(err.statusCode).json({
+      error: err.message,
+      code: err.code,
+      ...(err.details !== undefined ? { details: err.details } : {}),
     });
   }
 

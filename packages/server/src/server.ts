@@ -52,6 +52,7 @@ import {
   PolicyRequestSchema,
   WebhookRequestSchema,
   WebhookPatchSchema,
+  WalletPatchSchema,
 } from "./validation.js";
 import swaggerUi from "swagger-ui-express";
 import { openApiSpec } from "./openapi.js";
@@ -342,6 +343,13 @@ function getTransactionHash(xdr: string, networkPassphrase: string): string {
   } catch {
     return envelopeHash;
   }
+}
+
+/** Parses an optional numeric env var, returning undefined when unset/invalid. */
+function parseOptionalNumber(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 function getPackageVersion(): string {
@@ -663,9 +671,12 @@ return 1
   };
 
   const idempotency = createIdempotencyMiddleware({ redis: opts.redis });
+  // #517 — replay window and bounded clock-skew tolerance are configurable.
   const antiReplay = createAntiReplayMiddleware({
     redis: opts.redis,
     networkPassphrase: client.networkPassphrase,
+    windowSeconds: parseOptionalNumber(process.env.REPLAY_WINDOW_SECONDS),
+    maxClockSkewSeconds: parseOptionalNumber(process.env.MAX_CLOCK_SKEW_SECONDS),
   });
   const rbac = createRbacMiddleware(opts.rbac);
 
@@ -693,6 +704,8 @@ return 1
     next();
   });
 
+  // #516 — the public health view is intentionally minimal: it must never leak
+  // hostnames, versions, or dependency error details.
   app.get(
     "/health",
     wrapHandler(async (_req, res) => {
@@ -717,18 +730,30 @@ return 1
       const dependenciesHealthy = Object.values(dependencies).every(Boolean);
       const healthy = horizonConnected && dependenciesHealthy;
 
-      res.status(healthy ? 200 : 503).json({
-        status: healthy ? "ok" : "degraded",
-        horizonConnected,
-        dependencies,
-        network: client.config.network,
-        version: getPackageVersion(),
+      res.status(healthy ? 200 : 503).json({ status: healthy ? "ok" : "degraded" });
+    }),
+  );
+
+  // #516 — detailed dependency status requires admin authentication.
+  app.get(
+    "/health/details",
+    rbac.requirePermission("admin:read"),
+    wrapHandler(async (_req: Request, res: Response) => {
+      const report = await runDetailedHealth({
+        client,
+        cosignerSigner: opts.cosignerSigner,
+        feeSponsorService,
+        sponsorMonitorService,
+        readinessCheck: opts.readinessCheck,
+        minSponsorBalance: opts.minSponsorBalance,
       });
+      res.status(report.healthy ? 200 : 503).json(report);
     }),
   );
 
   app.get(
     "/health/deep",
+    rbac.requirePermission("admin:read"),
     wrapHandler(async (_req: Request, res: Response) => {
       const report = await runDeepHealthCheck({
         client,
@@ -1141,6 +1166,7 @@ return 1
   );
 
   // #169 — GET /wallets: list all registered wallets
+  // #515 — optional `tag` filter narrows the result set by wallet tag.
   app.get(
     "/wallets",
     rbac.requirePermission("wallets:read"),
@@ -1150,7 +1176,14 @@ return 1
         return;
       }
 
-      const allWallets = await opts.walletRegistry.list();
+      const tagParam = req.query.tag;
+      if (tagParam !== undefined && typeof tagParam !== "string") {
+        throw new ValidationError("tag must be a single string");
+      }
+
+      const allWallets = await opts.walletRegistry.listWallets(
+        tagParam !== undefined ? { tag: tagParam } : undefined,
+      );
 
       const limitParam = req.query.limit;
       const offsetParam = req.query.offset;
@@ -1161,6 +1194,37 @@ return 1
       const paginated = allWallets.slice(offset, offset + limit);
 
       res.json({ wallets: paginated, total: allWallets.length });
+    }),
+  );
+
+  // #515 — PATCH /wallets/:address: update label, tags, and size-limited metadata.
+  app.patch(
+    "/wallets/:address",
+    rbac.requirePermission("wallets:update"),
+    idempotency,
+    wrapHandler(async (req: Request, res: Response) => {
+      const address = req.params.address as string;
+      if (!StrKey.isValidEd25519PublicKey(address)) {
+        throw new ValidationError("address must be a valid Stellar public key");
+      }
+
+      const parsed = WalletPatchSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ValidationError("Validation failed", parsed.error.flatten().fieldErrors);
+      }
+
+      if (!opts.walletRegistry) {
+        res.status(404).json({ error: "Wallet not found" });
+        return;
+      }
+
+      const updated = await opts.walletRegistry.updateWalletMetadata(address, parsed.data);
+      if (!updated) {
+        res.status(404).json({ error: "Wallet not found" });
+        return;
+      }
+
+      res.json(updated);
     }),
   );
 
@@ -1346,6 +1410,48 @@ return 1
         res.status(404).json({ error: "Delivery not found" });
         return;
       }
+      res.json(result);
+    }),
+  );
+
+  // #518 — dead-letter inspection and replay for failed webhook deliveries.
+  app.get(
+    "/webhooks/dlq",
+    rbac.requirePermission("webhooks:read"),
+    wrapHandler(async (req: Request, res: Response) => {
+      const entries = await webhookDispatcher.listDeadLetters();
+
+      const limitParam = req.query.limit;
+      const offsetParam = req.query.offset;
+      const limit = limitParam === undefined ? 50 : Math.max(1, Math.min(200, Number(limitParam)));
+      const offset = offsetParam === undefined ? 0 : Math.max(0, Number(offsetParam));
+
+      res.json({
+        entries: entries.slice(offset, offset + limit),
+        total: entries.length,
+      });
+    }),
+  );
+
+  app.post(
+    "/webhooks/dlq/:id/replay",
+    rbac.requirePermission("webhooks:write"),
+    idempotency,
+    wrapHandler(async (req: Request, res: Response) => {
+      const deadLetterId = req.params.id as string;
+      const result = await webhookDispatcher.replayDeadLetter(deadLetterId);
+      if (!result) {
+        res.status(404).json({ error: "Dead-letter entry not found" });
+        return;
+      }
+
+      await auditLog.append({
+        txHash: `webhook-dlq:${deadLetterId}`,
+        walletAddress: result.webhookId ?? "webhook",
+        decision: result.success ? "approved" : "rejected",
+        rulesEvaluated: ["webhook:dlq-replay"],
+      });
+
       res.json(result);
     }),
   );

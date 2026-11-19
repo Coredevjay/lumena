@@ -7,6 +7,7 @@ import { LumenConnectModal } from '../src/components/LumenConnectModal';
 import { LumenTransactionFeed } from '../src/components/LumenTransactionFeed';
 import { LumenSwapWidget } from '../src/components/LumenSwapWidget';
 import { LumenQrScanner } from '../src/components/LumenQrScanner';
+import { LumenReceive } from '../src/components/LumenReceive';
 import { LumenThemeProvider } from '../src/theme/LumenThemeProvider';
 
 const noop = () => undefined;
@@ -377,6 +378,40 @@ export const QrScannerFrontCamera: StoryObj<typeof LumenQrScanner> = {
   args: {
     ...QrScannerDefault.args,
     facingMode: 'user',
+  },
+};
+
+const receiveMeta: Meta<typeof LumenReceive> = {
+  title: 'Lumen/LumenReceive',
+  component: LumenReceive,
+  parameters: {
+    layout: 'centered',
+  },
+  tags: ['autodocs'],
+  argTypes: {
+    address: { control: 'text' },
+    defaultAmount: { control: 'text' },
+    defaultMemo: { control: 'text' },
+    showAmount: { control: 'boolean' },
+    showMemo: { control: 'boolean' },
+    onCopy: { action: 'copied' },
+  },
+};
+
+export const ReceiveDefault: StoryObj<typeof LumenReceive> = {
+  name: 'Default',
+  args: {
+    address: 'GDLG3LO3ILCROFOFASXRWYNO2RHSGHA2BHK3M4PGELIL33WM63HCR7UA',
+    onCopy: noop,
+  },
+};
+
+export const ReceiveWithAmountAndMemo: StoryObj<typeof LumenReceive> = {
+  name: 'With Amount And Memo',
+  args: {
+    ...ReceiveDefault.args,
+    defaultAmount: '25',
+    defaultMemo: 'invoice 42',
   },
 };
 

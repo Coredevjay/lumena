@@ -15,6 +15,12 @@ export {
 } from "./ledger/ingest.js";
 export { SponsorRefillService, type SponsorRefillOpts } from "./fee-sponsor/refill.js";
 export {
+  SponsorReserveService,
+  type SponsorReserveOpts,
+  type SponsorReserveReport,
+  type WalletReserveEntry,
+} from "./fee-sponsor/reserves.js";
+export {
   WebhookDispatcher,
   verifyWebhookSignature,
   type WebhookDispatcherOpts,

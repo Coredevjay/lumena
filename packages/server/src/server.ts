@@ -64,6 +64,7 @@ import {
 
 import { SponsorMonitorService } from "./fee-sponsor/monitor.js";
 import { SponsorRefillService } from "./fee-sponsor/refill.js";
+import { SponsorReserveService } from "./fee-sponsor/reserves.js";
 import { LedgerIngestionWorker, type LedgerTransactionUpdate } from "./ledger/ingest.js";
 import { WebhookDispatcher } from "./webhook/dispatcher.js";
 import { createGraphQLGateway } from "./graphql/index.js";
@@ -353,6 +354,11 @@ export function createServer(opts: ServerOpts): ServerResult {
       : undefined,
   });
 
+  const sponsorReserveService = new SponsorReserveService({
+    client,
+    sponsorPublicKey: opts.feePayerSigner.publicKey(),
+  });
+
   const app = express();
   app.use((req, res, next) => {
     httpLogger(req as unknown as IncomingMessage, res, next);
@@ -570,6 +576,30 @@ return 1
     wrapHandler(async (_req: Request, res: Response) => {
       const status = await sponsorMonitorService.checkBalance();
       res.json(status);
+    }),
+  );
+
+  // #585 — Per-wallet sponsored reserve accounting
+  app.get(
+    "/sponsor/reserves",
+    rbac.requirePermission("wallets:read"),
+    wrapHandler(async (req: Request, res: Response) => {
+      const walletParam = req.query.wallet;
+      let addresses: string[];
+      if (walletParam !== undefined) {
+        addresses = (Array.isArray(walletParam) ? walletParam : [walletParam]).map(String);
+      } else if (opts.walletRegistry) {
+        addresses = await opts.walletRegistry.list();
+      } else {
+        addresses = [];
+      }
+
+      const invalid = addresses.find((address) => !StrKey.isValidEd25519PublicKey(address));
+      if (invalid !== undefined) {
+        throw new ValidationError(`wallet must be a valid Stellar public key: ${invalid}`);
+      }
+
+      res.json(await sponsorReserveService.getReport(addresses));
     }),
   );
 

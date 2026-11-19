@@ -113,6 +113,13 @@ const serverResult = createServer({
   logLevel: config.logLevel,
   windowMs: config.rateLimit.windowMs,
   max: config.rateLimit.max,
+  // Slow-client / slowloris protection. These are applied to the underlying
+  // HTTP server (server.headersTimeout, server.requestTimeout,
+  // server.keepAliveTimeout) and are NOT reloadable via SIGHUP — changing them
+  // requires a restart.
+  httpHeadersTimeoutMs: config.httpHeadersTimeoutMs,
+  httpRequestTimeoutMs: config.httpRequestTimeoutMs,
+  httpKeepAliveTimeoutMs: config.httpKeepAliveTimeoutMs,
 });
 serverResult.sponsorMonitorService.start();
 

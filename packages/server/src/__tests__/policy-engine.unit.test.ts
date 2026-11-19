@@ -565,3 +565,86 @@ describe("PolicyEngine Dynamic Policy Reload (invalidatePolicy)", () => {
     expect(() => engine.invalidatePolicy(walletId)).not.toThrow();
   });
 });
+
+describe("PolicyEngine evaluateWithAudit explain trace", () => {
+  const walletId = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+
+  it("returns an ordered trace of rule ids, inputs and outcomes", async () => {
+    const engine = new PolicyEngine();
+    await engine.addPolicy(createBlocklistPolicy(walletId, ["GBLOCKED"]));
+    await engine.addPolicy(createMaxOperationsPolicy(walletId, 2));
+
+    const transaction = {
+      operations: [{ type: "payment", destination: "GOTHER", amount: "10" }],
+    } as unknown as Transaction;
+
+    const result = await engine.evaluateWithAudit({ walletAddress: walletId, transaction });
+    expect(result.approved).toBe(true);
+    expect(result.trace.length).toBeGreaterThanOrEqual(2);
+
+    const ruleIds = result.trace.map((entry) => entry.ruleId);
+    expect(ruleIds).toEqual([...ruleIds].sort((a, b) => {
+      const indexA = result.trace.findIndex((entry) => entry.ruleId === a);
+      const indexB = result.trace.findIndex((entry) => entry.ruleId === b);
+      return indexA - indexB;
+    }));
+
+    for (const entry of result.trace) {
+      expect(typeof entry.ruleId).toBe("string");
+      expect(entry.ruleId.length).toBeGreaterThan(0);
+      expect(entry.inputs).toBeDefined();
+      expect(typeof entry.outcome).toBe("string");
+    }
+
+    const blocklistEntry = result.trace.find((entry) => entry.ruleId.includes("blocklist"));
+    expect(blocklistEntry).toBeDefined();
+    expect(blocklistEntry?.outcome).toBe("approved");
+  });
+
+  it("records a denied outcome in the trace", async () => {
+    const engine = new PolicyEngine();
+    await engine.addPolicy(createBlocklistPolicy(walletId, ["GBLOCKED"]));
+
+    const transaction = {
+      operations: [{ type: "payment", destination: "GBLOCKED", amount: "10" }],
+    } as unknown as Transaction;
+
+    const result = await engine.evaluateWithAudit({ walletAddress: walletId, transaction });
+    expect(result.approved).toBe(false);
+    expect(result.trace.some((entry) => entry.outcome === "denied")).toBe(true);
+  });
+
+  it("redacts amounts in trace inputs when redaction is configured", async () => {
+    const engine = new PolicyEngine({ redactAmounts: true });
+    await engine.addPolicy(createSpendLimitPolicy(walletId, "native", "100", "500"));
+
+    const transaction = {
+      operations: [{ type: "payment", destination: "GDEST", amount: "50", asset: "native" }],
+    } as unknown as Transaction;
+
+    const result = await engine.evaluateWithAudit({ walletAddress: walletId, transaction });
+    expect(result.approved).toBe(true);
+
+    const serialized = JSON.stringify(result.trace);
+    expect(serialized).not.toContain("50");
+    expect(serialized).toContain("[REDACTED]");
+  });
+
+  it("truncates the trace with a marker when it exceeds the maximum length", async () => {
+    const engine = new PolicyEngine({ maxTraceEntries: 2 });
+    await engine.addPolicy(createBlocklistPolicy(walletId, ["GBLOCKED"]));
+    await engine.addPolicy(createMaxOperationsPolicy(walletId, 5));
+    await engine.addPolicy(createAssetAllowlistPolicy(walletId, ["native"]));
+    await engine.addPolicy(createTimeBoundsPolicy(walletId, 300, true));
+
+    const now = Math.floor(Date.now() / 1000);
+    const transaction = {
+      operations: [{ type: "payment", destination: "GOTHER", amount: "10", asset: "native" }],
+      timeBounds: { minTime: (now - 10).toString(), maxTime: (now + 60).toString() },
+    } as unknown as Transaction;
+
+    const result = await engine.evaluateWithAudit({ walletAddress: walletId, transaction });
+    expect(result.trace.length).toBeLessThanOrEqual(3);
+    expect(result.trace.some((entry) => entry.truncated === true)).toBe(true);
+  });
+});

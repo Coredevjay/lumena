@@ -18,6 +18,10 @@ import { validateTimeBounds } from "@lumen/core";
 export interface EvaluateOpts {
   walletAddress: string;
   transaction: Transaction;
+  /** When true, amount fields in the explain trace are redacted. */
+  redactAmounts?: boolean;
+  /** Maximum number of trace entries to record (defaults to 50). */
+  maxTraceEntries?: number;
 }
 
 export interface EvaluateAuthEntryOpts {
@@ -52,6 +56,31 @@ export interface EvaluateWithDetailsResult {
   reason?: string;
   results: RuleEvaluationResult[];
 }
+
+export interface PolicyTraceEntry {
+  /** Stable identifier for the rule: `${type}:${index}`. */
+  ruleId: string;
+  /** Relevant inputs the rule was evaluated against (amounts may be redacted). */
+  inputs: Record<string, unknown>;
+  outcome: "approved" | "rejected";
+  reason?: string;
+}
+
+export interface PolicyTrace {
+  entries: PolicyTraceEntry[];
+  /** True when the trace was capped and entries were dropped. */
+  truncated: boolean;
+  /** Number of entries omitted due to the cap. */
+  omittedCount: number;
+}
+
+export interface EvaluateWithAuditResult extends EvaluateResult {
+  rulesEvaluated: string[];
+  trace: PolicyTrace;
+}
+
+const DEFAULT_MAX_TRACE_ENTRIES = 50;
+const REDACTED_AMOUNT = "[redacted]";
 
 export interface PolicyEngineOptions {
   defaultPolicy?: "allow" | "deny";
@@ -351,9 +380,15 @@ export class PolicyEngine {
 
   evaluateWithAudit(opts: EvaluateOpts): EvaluateResult & { rulesEvaluated: string[] } {
     const rulesEvaluated: string[] = [];
+    const trace = this.createTraceCollector(opts);
     try {
       if (!opts || typeof opts !== "object") {
-        return { approved: false, reason: "Malformed evaluation options", rulesEvaluated };
+        return {
+          approved: false,
+          reason: "Malformed evaluation options",
+          rulesEvaluated,
+          trace: trace.finish(),
+        };
       }
 
       const policy = this.policies.get(opts.walletAddress);
@@ -366,29 +401,155 @@ export class PolicyEngine {
               ? `No policy found for wallet ${opts.walletAddress}`
               : undefined,
           rulesEvaluated,
+          trace: trace.finish(),
         };
       }
 
       if (!Array.isArray(policy.rules)) {
-        return { approved: false, reason: "Policy has malformed rules", rulesEvaluated };
+        return {
+          approved: false,
+          reason: "Policy has malformed rules",
+          rulesEvaluated,
+          trace: trace.finish(),
+        };
       }
 
-      for (const rule of policy.rules) {
-        rulesEvaluated.push(typeof rule?.type === "string" ? rule.type : "unknown");
+      for (let index = 0; index < policy.rules.length; index++) {
+        const rule = policy.rules[index];
+        const ruleType = typeof rule?.type === "string" ? rule.type : "unknown";
+        rulesEvaluated.push(ruleType);
         const result = this.evaluateRule(rule, opts);
+        trace.record(ruleType, index, rule, opts, result);
         if (!result.approved) {
-          return { ...result, rulesEvaluated };
+          return { ...result, rulesEvaluated, trace: trace.finish() };
         }
       }
 
-      return { approved: true, rulesEvaluated };
+      return { approved: true, rulesEvaluated, trace: trace.finish() };
     } catch (err) {
       return {
         approved: false,
         reason: `Policy evaluation failed closed: ${err instanceof Error ? err.message : String(err)}`,
         rulesEvaluated,
+        trace: trace.finish(),
       };
     }
+  }
+
+  /**
+   * Build a bounded, ordered explain-trace collector for a single evaluation.
+   * Entries beyond the configured maximum are dropped and counted so callers
+   * can persist a truncation marker alongside the trace.
+   */
+  private createTraceCollector(opts: EvaluateOpts): {
+    record: (
+      ruleType: string,
+      index: number,
+      rule: PolicyRule,
+      evalOpts: EvaluateOpts,
+      result: EvaluateResult,
+    ) => void;
+    finish: () => PolicyTrace;
+  } {
+    const entries: PolicyTraceEntry[] = [];
+    const redactAmounts = opts?.redactAmounts === true;
+    const rawMax = opts?.maxTraceEntries;
+    const maxEntries =
+      typeof rawMax === "number" && Number.isFinite(rawMax) && rawMax >= 0
+        ? Math.floor(rawMax)
+        : DEFAULT_MAX_TRACE_ENTRIES;
+    let omittedCount = 0;
+
+    return {
+      record: (ruleType, index, rule, evalOpts, result) => {
+        if (entries.length >= maxEntries) {
+          omittedCount++;
+          return;
+        }
+        const inputs = this.buildTraceInputs(rule, evalOpts, redactAmounts);
+        const entry: PolicyTraceEntry = {
+          ruleId: `${ruleType}:${index}`,
+          inputs,
+          outcome: result.approved ? "approved" : "rejected",
+        };
+        if (result.reason !== undefined) {
+          entry.reason = result.reason;
+        }
+        entries.push(entry);
+      },
+      finish: () => ({
+        entries: entries.slice(),
+        truncated: omittedCount > 0,
+        omittedCount,
+      }),
+    };
+  }
+
+  /**
+   * Extract the relevant inputs a rule was evaluated against, redacting
+   * amount-bearing fields when requested.
+   */
+  private buildTraceInputs(
+    rule: PolicyRule,
+    opts: EvaluateOpts,
+    redactAmounts: boolean,
+  ): Record<string, unknown> {
+    const inputs: Record<string, unknown> = {};
+    try {
+      const typedRule = rule as unknown as Record<string, unknown>;
+
+      if (typedRule && typeof typedRule === "object") {
+        if ("asset" in typedRule) {
+          inputs.asset = this.getAssetIdentifier(
+            typedRule.asset as Asset | string | undefined,
+          );
+        }
+        if ("windowMinutes" in typedRule) {
+          inputs.windowMinutes = typedRule.windowMinutes;
+        }
+        if ("maxTransactions" in typedRule) {
+          inputs.maxTransactions = typedRule.maxTransactions;
+        }
+        if ("maxPerTx" in typedRule) {
+          inputs.maxPerTx = redactAmounts ? REDACTED_AMOUNT : typedRule.maxPerTx;
+        }
+        if ("maxDaily" in typedRule) {
+          inputs.maxDaily = redactAmounts ? REDACTED_AMOUNT : typedRule.maxDaily;
+        }
+        if ("maxSpend" in typedRule) {
+          inputs.maxSpend = redactAmounts ? REDACTED_AMOUNT : typedRule.maxSpend;
+        }
+        if ("maxFeeStroops" in typedRule) {
+          inputs.maxFeeStroops = redactAmounts ? REDACTED_AMOUNT : typedRule.maxFeeStroops;
+        }
+        if ("maxOperations" in typedRule) {
+          inputs.maxOperations = typedRule.maxOperations;
+        }
+      }
+
+      const destinations: string[] = [];
+      const amounts: string[] = [];
+      for (const op of this.getOperations(opts)) {
+        if ("destination" in op && op.destination) {
+          destinations.push(op.destination.toString());
+        }
+        if ("amount" in op && typeof (op as { amount: unknown }).amount === "string") {
+          amounts.push(
+            redactAmounts ? REDACTED_AMOUNT : (op as { amount: string }).amount,
+          );
+        }
+      }
+      if (destinations.length > 0) {
+        inputs.destinations = destinations;
+      }
+      if (amounts.length > 0) {
+        inputs.amounts = amounts;
+      }
+    } catch {
+      // Trace input extraction must never affect the decision outcome.
+      inputs.unavailable = true;
+    }
+    return inputs;
   }
 
   private evaluateRule(rule: PolicyRule, opts: EvaluateOpts): EvaluateResult {

@@ -619,6 +619,112 @@ describe("FeeSponsorService concurrency (issue #233)", () => {
     expect(attempts).toBe(3);
   });
 
+  it("re-reserves a sequence, rebuilds the fee-bump envelope and retries exactly once on tx_bad_seq", async () => {
+    const redis = makeFakeRedis();
+    const baseAllocator = new SequenceAllocator({
+      redis: redis as any,
+      key: `seq:${feePayerKeypair.publicKey()}`,
+      startSequence: "100",
+      reservationTtlMs: 5_000,
+    });
+
+    const reserveSpy = vi.spyOn(baseAllocator, "reserve");
+    const releaseSpy = vi.spyOn(baseAllocator, "release");
+
+    const mockSubmit = vi
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(new Error("tx_bad_seq"), {
+          response: {
+            data: { extras: { result_codes: { transaction: "tx_bad_seq" } } },
+          },
+        }),
+      )
+      .mockResolvedValueOnce({ successful: true, hash: "c".repeat(64) });
+
+    const mockIncrement = vi.fn();
+    const service = new FeeSponsorService({
+      client: makeMockClient(mockSubmit),
+      signer,
+      sequenceAllocator: baseAllocator,
+      metrics: { increment: mockIncrement } as any,
+    });
+
+    const innerXdr = buildSignedInnerTxXdr(
+      Keypair.random(),
+      Keypair.random().publicKey(),
+    );
+
+    const result = await service.submit(innerXdr);
+
+    expect(result.hash).toBe("c".repeat(64));
+    // Exactly one retry: two submissions in total.
+    expect(mockSubmit).toHaveBeenCalledTimes(2);
+    // A fresh sequence was reserved from the allocator for the retry.
+    expect(reserveSpy).toHaveBeenCalledTimes(2);
+    // The stale reservation was released before re-reserving.
+    expect(releaseSpy).toHaveBeenCalledTimes(1);
+    // The retried envelope is a distinct, rebuilt fee-bump transaction.
+    const firstTx = mockSubmit.mock.calls[0][0] as FeeBumpTransaction;
+    const secondTx = mockSubmit.mock.calls[1][0] as FeeBumpTransaction;
+    expect(firstTx).toBeInstanceOf(FeeBumpTransaction);
+    expect(secondTx).toBeInstanceOf(FeeBumpTransaction);
+    expect(secondTx).not.toBe(firstTx);
+    expect(secondTx.toXDR()).not.toBe(firstTx.toXDR());
+    // Resequence metric was incremented once.
+    expect(mockIncrement).toHaveBeenCalledWith("fee_sponsor.resequence");
+    // No reservation leaked.
+    expect(await baseAllocator.pendingReservations()).toBe(0);
+  });
+
+  it("surfaces a second consecutive tx_bad_seq as an error instead of retrying again", async () => {
+    const redis = makeFakeRedis();
+    const baseAllocator = new SequenceAllocator({
+      redis: redis as any,
+      key: `seq:${feePayerKeypair.publicKey()}`,
+      startSequence: "100",
+      reservationTtlMs: 5_000,
+    });
+
+    const reserveSpy = vi.spyOn(baseAllocator, "reserve");
+
+    const badSeqError = () =>
+      Object.assign(new Error("tx_bad_seq"), {
+        response: {
+          data: { extras: { result_codes: { transaction: "tx_bad_seq" } } },
+        },
+      });
+
+    const mockSubmit = vi
+      .fn()
+      .mockRejectedValueOnce(badSeqError())
+      .mockRejectedValueOnce(badSeqError());
+
+    const mockIncrement = vi.fn();
+    const service = new FeeSponsorService({
+      client: makeMockClient(mockSubmit),
+      signer,
+      sequenceAllocator: baseAllocator,
+      metrics: { increment: mockIncrement } as any,
+    });
+
+    const innerXdr = buildSignedInnerTxXdr(
+      Keypair.random(),
+      Keypair.random().publicKey(),
+    );
+
+    await expect(service.submit(innerXdr)).rejects.toThrow(/tx_bad_seq/);
+
+    // Retry is limited to one: the second failure is surfaced, not retried.
+    expect(mockSubmit).toHaveBeenCalledTimes(2);
+    expect(reserveSpy).toHaveBeenCalledTimes(2);
+    // The resequence metric still reflects the single resequence attempt.
+    expect(mockIncrement).toHaveBeenCalledTimes(1);
+    expect(mockIncrement).toHaveBeenCalledWith("fee_sponsor.resequence");
+    // No reservation leaked.
+    expect(await baseAllocator.pendingReservations()).toBe(0);
+  });
+
   it("rolls back the reservation when a submission times out", async () => {
     const redis = makeFakeRedis();
     const allocator = new SequenceAllocator({

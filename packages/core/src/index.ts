@@ -93,6 +93,12 @@ export {
   type Sep30IdentityType,
 } from "./stellar/sep30.js";
 export {
+  buildPayUri,
+  parsePayUri,
+  type PayUriParams,
+  type PayUriMemoType,
+} from "./stellar/sep7.js";
+export {
   encodeMuxedAddress,
   decodeMuxedAddress,
   resolveBasePublicKey,

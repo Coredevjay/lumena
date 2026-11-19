@@ -282,3 +282,55 @@ export interface WebhookDeliveryRecord {
   updatedAt: string;
   deliveredAt?: string;
 }
+
+/**
+ * A dead-lettered webhook delivery exposed by the DLQ inspection endpoints.
+ *
+ * @example
+ * ```ts
+ * const entry: WebhookDlqEntry = {
+ *   id: "dlv_123",
+ *   webhookId: "wh_123",
+ *   event: "transaction.sponsored",
+ *   payload: { id: "evt_123", event: "transaction.sponsored", timestamp: "2024-01-01T00:00:00.000Z", data: {} },
+ *   attempts: 5,
+ *   lastError: "HTTP 500",
+ *   deadLettered: true,
+ *   createdAt: "2024-01-01T00:00:00.000Z",
+ *   updatedAt: "2024-01-01T00:05:00.000Z",
+ * };
+ * ```
+ */
+export interface WebhookDlqEntry {
+  id: string;
+  webhookId: string;
+  event: WebhookEventType;
+  payload: WebhookPayload;
+  attempts: number;
+  lastError?: string;
+  deadLettered: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Outcome of replaying a dead-lettered webhook delivery.
+ *
+ * @example
+ * ```ts
+ * const result: WebhookDlqReplayResult = {
+ *   deliveryId: "dlv_123",
+ *   success: true,
+ *   statusCode: 200,
+ *   attempts: 1,
+ *   replayedAt: "2024-01-01T00:10:00.000Z",
+ * };
+ * ```
+ */
+export interface WebhookDlqReplayResult {
+  deliveryId: string;
+  success: boolean;
+  statusCode?: number;
+  attempts: number;
+  replayedAt: string;
+}

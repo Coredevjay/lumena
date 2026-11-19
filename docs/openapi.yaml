@@ -10,7 +10,9 @@ paths:
   /health:
     get:
       summary: Health Check
-      description: Returns the operational status of the server and the configured Stellar network.
+      description: >
+        Returns a minimal public health status. No internal details (hostnames,
+        versions, dependency errors) are exposed on this endpoint.
       responses:
         '200':
           description: Server is healthy
@@ -22,12 +24,58 @@ paths:
                   status:
                     type: string
                     example: ok
-                  network:
-                    type: string
-                    example: testnet
                 required:
                   - status
-                  - network
+  /health/details:
+    get:
+      summary: Detailed Health Check
+      description: >
+        Returns detailed dependency status (database, Horizon, etc.). Requires
+        admin authentication; unauthenticated callers receive 401.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Detailed health status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  dependencies:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                          example: database
+                        status:
+                          type: string
+                          example: up
+                        latencyMs:
+                          type: integer
+                          nullable: true
+                          example: 3
+                      required:
+                        - name
+                        - status
+                  uptimeSeconds:
+                    type: integer
+                    example: 3600
+                  version:
+                    type: string
+                    example: 0.1.0
+                required:
+                  - status
+                  - dependencies
+        '401':
+          description: Missing or invalid admin credentials
+        '403':
+          description: Authenticated but not authorized for detailed health
   /cosign:
     post:
       summary: Cosign Transaction
@@ -174,6 +222,13 @@ paths:
             minimum: 0
             default: 0
           description: Number of wallets to skip for pagination.
+        - name: tag
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Only return wallets carrying this tag.
+          example: treasury
       responses:
         '200':
           description: List of registered wallet addresses
@@ -197,6 +252,67 @@ paths:
                   - total
         '401':
           description: Missing or invalid API key
+  /wallets/{address}:
+    patch:
+      summary: Update Wallet Metadata
+      description: >
+        Updates operator-managed metadata for a registered wallet: label, tags and
+        free-form metadata. Size limits are enforced (label max 128 chars, max 20
+        tags of 64 chars each, metadata serialized max 4 KB). Requires admin RBAC.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Stellar public key address of the wallet.
+          example: GAD7654...
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                label:
+                  type: string
+                  maxLength: 128
+                  description: Human-readable wallet label.
+                  example: Treasury hot wallet
+                tags:
+                  type: array
+                  maxItems: 20
+                  items:
+                    type: string
+                    maxLength: 64
+                  description: Replacement tag list.
+                  example:
+                    - treasury
+                    - hot
+                metadata:
+                  type: object
+                  description: Free-form metadata object (serialized size max 4 KB).
+                  additionalProperties: true
+                  example:
+                    owner: alice@example.com
+      responses:
+        '200':
+          description: Wallet metadata updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletMetadata'
+        '400':
+          description: Invalid payload or size limit exceeded
+        '401':
+          description: Missing or invalid API key
+        '403':
+          description: Insufficient permissions
+        '404':
+          description: Wallet not found
   /wallet/create:
     post:
       summary: Create Seedless Wallet
@@ -396,80 +512,243 @@ paths:
                 $ref: '#/components/schemas/Policy'
         '404':
           description: No policy found for wallet
-  /audit/export:
-    get:
-      summary: Export Audit Log
+  /policy/{walletId}/evaluate:
+    post:
+      summary: Evaluate Transaction Against Policy (Dry Run)
       description: >
-        Streams audit log entries as JSONL (default) or CSV, filtered by wallet
-        and date range. The stream is produced with constant memory usage. A
-        manifest containing the Merkle root of the exported entries is emitted
-        so the export can be verified offline.
-      security:
-        - bearerAuth: []
+        Evaluates a base64-encoded transaction envelope XDR against the stored
+        policy for the wallet and returns the decision plus matched rules.
+        This is a dry run: it does not co-sign the transaction and does not
+        record velocity or any other state.
       parameters:
-        - name: format
-          in: query
-          required: false
+        - name: walletId
+          in: path
+          required: true
           schema:
             type: string
-            enum: [jsonl, csv]
-            default: jsonl
-          description: Output serialization format.
-        - name: wallet
-          in: query
-          required: false
-          schema:
-            type: string
-          description: Filter entries to a single wallet address.
-          example: GAD7654...
-        - name: from
-          in: query
-          required: false
-          schema:
-            type: string
-            format: date-time
-          description: Include entries at or after this timestamp (inclusive).
-        - name: to
-          in: query
-          required: false
-          schema:
-            type: string
-            format: date-time
-          description: Include entries at or before this timestamp (inclusive).
-        - name: manifest
-          in: query
-          required: false
-          schema:
-            type: boolean
-            default: true
-          description: >
-            When true, the response trailer includes the manifest as the final
-            line (JSONL) or as a comment row (CSV).
+          description: Stellar public key address of the wallet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                xdr:
+                  type: string
+                  description: Base64 encoded Stellar transaction envelope XDR to evaluate.
+                  example: AAAAAG...
+              required:
+                - xdr
       responses:
         '200':
-          description: Streamed audit log export
-          headers:
-            Content-Disposition:
-              schema:
-                type: string
-              description: Attachment filename for the export.
-            X-Audit-Merkle-Root:
-              schema:
-                type: string
-              description: Merkle root over the exported entries, for offline verification.
+          description: Evaluation result (no state mutation)
           content:
-            application/x-ndjson:
+            application/json:
               schema:
-                type: string
-                description: One JSON audit entry per line, followed by the manifest line.
-            text/csv:
-              schema:
-                type: string
-                description: CSV rows of audit entries, followed by the manifest row.
+                $ref: '#/components/schemas/RuleEvaluationResult'
         '400':
-          description: Invalid filter or format parameter
-        '401':
-          description: Missing or invalid API key
+          description: Invalid request or malformed XDR
+        '404':
+          description: No policy found for wallet
+  /policy/{id}/versions:
+    get:
+      summary: List Policy Versions
+      description: Returns the immutable version history for a policy, newest first, including author and timestamp for each version.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Policy ID.
+      responses:
+        '200':
+          description: Policy version history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PolicyVersion'
+                  count:
+                    type: integer
+                    example: 3
+                required:
+                  - versions
+                  - count
+        '404':
+          description: Policy not found
+  /policy/{id}/rollback:
+    post:
+      summary: Roll Back Policy
+      description: Restores a policy to a previous immutable version, creating a new version recording the rollback.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Policy ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version:
+                  type: integer
+                  description: Version number to restore.
+                  example: 2
+              required:
+                - version
+      responses:
+        '200':
+          description: Policy rolled back successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '400':
+          description: Invalid rollback request
+        '404':
+          description: Policy or version not found
+  /policy/templates:
+    get:
+      summary: List Policy Templates
+      description: Returns the built-in named policy templates (conservative, payroll, dapp-session) validated against the rule schemas.
+      responses:
+        '200':
+          description: List of policy templates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                          example: conservative
+                        description:
+                          type: string
+                        rules:
+                          type: array
+                          items:
+                            type: object
+                      required:
+                        - name
+                        - rules
+                required:
+                  - templates
+  /policy/templates/{name}/apply:
+    post:
+      summary: Apply Policy Template
+      description: Applies a named policy template to a wallet, creating a new policy version.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [conservative, payroll, dapp-session]
+          description: Template name.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                walletId:
+                  type: string
+                  description: Stellar public key address of the wallet.
+                  example: GAD7654...
+              required:
+                - walletId
+      responses:
+        '200':
+          description: Template applied successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '400':
+          description: Invalid template or request
+        '404':
+          description: Template not found
+  /policy/{walletId}/export:
+    get:
+      summary: Export Wallet Policy
+      description: Exports the wallet policy as a validated JSON document suitable for import elsewhere.
+      parameters:
+        - name: walletId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Stellar public key address of the wallet.
+      responses:
+        '200':
+          description: Exported policy document
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  walletId:
+                    type: string
+                  rules:
+                    type: array
+                    items:
+                      type: object
+                required:
+                  - rules
+        '404':
+          description: No policy found for wallet
+  /policy/import:
+    post:
+      summary: Import Wallet Policy
+      description: Imports a JSON policy document, validating all rules against the rule schemas before storing a new policy version.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                walletId:
+                  type: string
+                  description: Stellar public key address of the wallet.
+                  example: GAD7654...
+                rules:
+                  type: array
+                  items:
+                    oneOf:
+                      - $ref: '#/components/schemas/SpendLimitRule'
+                      - $ref: '#/components/schemas/VelocityRule'
+                      - $ref: '#/components/schemas/AllowlistRule'
+                      - $ref: '#/components/schemas/MaxOperationsRule'
+                      - $ref: '#/components/schemas/ContractAllowlistRule'
+              required:
+                - walletId
+                - rules
+      responses:
+        '200':
+          description: Policy imported successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '400':
+          description: Invalid policy document
   /webhooks:
     get:
       summary: List Webhooks
@@ -566,6 +845,95 @@ paths:
           description: Invalid patch payload
         '404':
           description: Webhook not found
+  /webhooks/dlq:
+    get:
+      summary: List Dead-Letter Deliveries
+      description: >
+        Returns failed webhook deliveries currently held in the dead-letter queue.
+        Requires admin RBAC.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Dead-letter queue entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DeadLetterEntry'
+                  total:
+                    type: integer
+                    example: 3
+                required:
+                  - entries
+                  - total
+        '401':
+          description: Missing or invalid API key
+        '403':
+          description: Insufficient permissions
+  /webhooks/dlq/{id}/replay:
+    post:
+      summary: Replay Dead-Letter Delivery
+      description: >
+        Re-dispatches a dead-lettered webhook delivery. The payload is re-signed
+        with the webhook's current secret and an audit entry is recorded. Requires
+        admin RBAC.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Dead-letter entry ID.
+      responses:
+        '200':
+          description: Replay attempted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  statusCode:
+                    type: integer
+                    nullable: true
+                    example: 200
+                  attempts:
+                    type: integer
+                    example: 1
+                required:
+                  - success
+                  - attempts
+        '401':
+          description: Missing or invalid API key
+        '403':
+          description: Insufficient permissions
+        '404':
+          description: Dead-letter entry not found
   /webhooks/{id}/test:
     post:
       summary: Send Test Webhook
@@ -827,6 +1195,78 @@ components:
         - id
         - walletId
         - rules
+    PolicyVersion:
+      type: object
+      description: Immutable snapshot of a policy at a point in time.
+      properties:
+        id:
+          type: string
+          example: 550e8400-e29b-41d4-a716-446655440000
+        policyId:
+          type: string
+          example: 550e8400-e29b-41d4-a716-446655440000
+        version:
+          type: integer
+          example: 1
+        walletId:
+          type: string
+          example: GAD7654...
+        rules:
+          type: array
+          items:
+            type: object
+        author:
+          type: string
+          description: Identifier of the actor that created this version.
+          example: admin
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - policyId
+        - version
+        - walletId
+        - rules
+        - createdAt
+    RuleEvaluationResult:
+      type: object
+      description: Outcome of a dry-run policy evaluation. No state is mutated.
+      properties:
+        allowed:
+          type: boolean
+          description: Whether the transaction would be approved by the policy.
+          example: true
+        matchedRules:
+          type: array
+          description: Rules that were evaluated and matched during the dry run.
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                example: spend_limit
+              passed:
+                type: boolean
+                example: true
+              reason:
+                type: string
+                nullable: true
+                example: null
+        violations:
+          type: array
+          description: Rules that would cause the transaction to be denied.
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                example: velocity
+              reason:
+                type: string
+                example: Velocity limit exceeded
+      required:
+        - allowed
+        - matchedRules
     WebhookConfig:
       type: object
       description: Registered webhook configuration (secret is never returned).

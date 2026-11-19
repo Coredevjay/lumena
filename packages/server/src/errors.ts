@@ -43,23 +43,15 @@ export class StellarError extends Error {
   }
 }
 
-export class SimulationError extends Error {
+export class ClockSkewError extends Error {
   statusCode: number;
-  reason: string;
-  code?: string;
+  code: string;
   details?: unknown;
 
-  constructor(
-    message: string,
-    reason: string,
-    statusCode = 422,
-    code?: string,
-    details?: unknown
-  ) {
+  constructor(message: string, details?: unknown, statusCode = 400, code = "CLOCK_SKEW") {
     super(message);
-    this.name = "SimulationError";
+    this.name = "ClockSkewError";
     this.statusCode = statusCode;
-    this.reason = reason;
     this.code = code;
     this.details = details;
   }
@@ -109,6 +101,14 @@ export const errorHandler = (
     return res.status(err.statusCode).json({
       error: err.message,
       ...(err.code ? { code: err.code } : {}),
+    });
+  }
+
+  if (err instanceof ClockSkewError) {
+    return res.status(err.statusCode).json({
+      error: err.message,
+      code: err.code,
+      ...(err.details !== undefined ? { details: err.details } : {}),
     });
   }
 

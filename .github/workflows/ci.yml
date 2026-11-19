@@ -64,6 +64,12 @@ jobs:
       - name: Run typecheck
         run: pnpm typecheck
 
+      - name: Validate AsyncAPI document
+        run: pnpm exec asyncapi validate docs/asyncapi.yaml
+
+      - name: Validate WebSocket sample messages against AsyncAPI schemas
+        run: pnpm --filter "@lumen/server" test:asyncapi
+
       - name: Build packages
         run: pnpm build
 

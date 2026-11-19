@@ -25,7 +25,12 @@ export {
   verifyWebhookSignature,
   type WebhookDispatcherOpts,
 } from "./webhook/dispatcher.js";
-export { createServer, type ServerOpts, type ServerResult } from "./server.js";
+export {
+  createServer,
+  type ServerOpts,
+  type ServerResult,
+  type ServerTimeoutOpts,
+} from "./server.js";
 export { createGraphQLGateway, type GraphQLGatewayOpts } from "./graphql/index.js";
 export { EnvSigner } from "./signers/EnvSigner.js";
 export { AwsKmsSigner } from "./signers/AwsKmsSigner.js";

@@ -12,6 +12,10 @@ import { logger } from "./logger.js";
 import { registerShutdownHandlers } from "./lifecycle.js";
 import { loadConfig } from "./config.js";
 import { registerReloadHandler } from "./reload.js";
+import {
+  buildNetworkRegistry,
+  parseNetworkRegistryConfig,
+} from "./networkRegistry.js";
 
 // Parse and validate configuration before anything else starts. Invalid or
 // unsafe combinations (e.g. CORS_ORIGINS="*" together with credentials/API
@@ -73,11 +77,29 @@ async function buildSigners(): Promise<{ cosigner: Signer; feePayer: Signer }> {
 
 const { cosigner, feePayer } = await buildSigners();
 
+// Multi-network support: a single process can serve tenants on different
+// Stellar networks (e.g. testnet and mainnet). The registry maps tenant/API
+// key -> network settings (horizon/rpc/passphrase/sponsor). STELLAR_NETWORK
+// (plus HORIZON_URL / SOROBAN_RPC_URL) remains the default network used for
+// tenants without an explicit mapping.
+//
+// Configure per-tenant mappings via NETWORK_REGISTRY (JSON) or
+// NETWORK_REGISTRY_FILE (path to a JSON file). See docs/multi-network.md.
+const defaultNetwork = (process.env.STELLAR_NETWORK as any) ?? "testnet";
+const networkRegistryConfig = parseNetworkRegistryConfig(process.env);
+const networkRegistry = buildNetworkRegistry({
+  defaultNetwork,
+  defaultHorizonUrl: process.env.HORIZON_URL,
+  defaultRpcUrl: process.env.SOROBAN_RPC_URL,
+  config: networkRegistryConfig,
+});
+
 const serverResult = createServer({
   port: config.port,
-  network: (process.env.STELLAR_NETWORK as any) ?? "testnet",
+  network: defaultNetwork,
   horizonUrl: process.env.HORIZON_URL,
   rpcUrl: process.env.SOROBAN_RPC_URL,
+  networkRegistry,
   horizonUrls,
   rpcUrls,
   fraudMaxRiskScore,
@@ -91,14 +113,22 @@ const serverResult = createServer({
   logLevel: config.logLevel,
   windowMs: config.rateLimit.windowMs,
   max: config.rateLimit.max,
+  // Slow-client / slowloris protection. These are applied to the underlying
+  // HTTP server (server.headersTimeout, server.requestTimeout,
+  // server.keepAliveTimeout) and are NOT reloadable via SIGHUP — changing them
+  // requires a restart.
+  httpHeadersTimeoutMs: config.httpHeadersTimeoutMs,
+  httpRequestTimeoutMs: config.httpRequestTimeoutMs,
+  httpKeepAliveTimeoutMs: config.httpKeepAliveTimeoutMs,
 });
 serverResult.sponsorMonitorService.start();
 
 // SIGHUP reloads non-critical settings (log level, rate limits, CORS
 // allowlist). Invalid configs are logged and the previous values are kept.
-// Reloadable: LOG_LEVEL, RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX, CORS_ORIGINS.
+// Reloadable: LOG_LEVEL, RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX, CORS_ORIGINS,
+// NETWORK_REGISTRY / NETWORK_REGISTRY_FILE (per-tenant network mappings).
 // Not reloadable (require restart): PORT, API_KEY, signer/KMS settings,
-// STELLAR_NETWORK, HORIZON_URL, SOROBAN_RPC_URL.
+// STELLAR_NETWORK, HORIZON_URL, SOROBAN_RPC_URL (the default network).
 registerReloadHandler({
   reload: () => serverResult.reloadConfig(),
 });

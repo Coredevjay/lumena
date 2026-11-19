@@ -87,6 +87,53 @@ export interface WalletInstance {
 }
 
 /**
+ * Operator-managed metadata attached to a wallet in the registry (#515).
+ *
+ * Labels and tags help operators manage large wallet fleets, while the free
+ * form `metadata` record carries arbitrary size-limited key/value pairs.
+ *
+ * @example
+ * ```ts
+ * const metadata: WalletMetadata = {
+ *   label: "treasury-hot-wallet",
+ *   tags: ["treasury", "hot"],
+ *   metadata: { ownerContact: "ops@example.com" },
+ * };
+ * ```
+ */
+export interface WalletMetadata {
+  /** Human-readable label for the wallet (size-limited). */
+  label?: string;
+  /** Tags used for filtering wallets in list endpoints (size-limited). */
+  tags?: string[];
+  /** Arbitrary size-limited key/value metadata (e.g. owner contact). */
+  metadata?: Record<string, string>;
+}
+
+/**
+ * A dead-lettered webhook delivery (#515).
+ *
+ * Deliveries that exhaust their retry budget are persisted here so operators
+ * can inspect and replay them via the DLQ endpoints.
+ */
+export interface WebhookDlqEntry {
+  /** Unique identifier of the dead-lettered delivery. */
+  id: string;
+  /** Identifier of the webhook subscription the delivery belonged to. */
+  webhookId: string;
+  /** Event name that triggered the delivery. */
+  event: string;
+  /** Serialized payload that failed to deliver. */
+  payload: unknown;
+  /** Number of delivery attempts made before dead-lettering. */
+  attempts: number;
+  /** Error message from the last failed attempt. */
+  lastError: string;
+  /** Timestamp at which the delivery was dead-lettered. */
+  createdAt: Date;
+}
+
+/**
  * Status of a pending contract upgrade for the upgradeable proxy (#224).
  */
 export type UpgradeState =

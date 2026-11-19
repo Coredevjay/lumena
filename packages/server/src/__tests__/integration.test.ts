@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
+import { createServer, type Server } from "node:http";
+import { connect, type Socket } from "node:net";
 import { Keypair, TransactionBuilder, Operation, Asset, BASE_FEE } from "@stellar/stellar-sdk";
 import { StellarClient, createSponsoredAccount, setupMultisig } from "@lumen/core";
 import { CosignerService } from "../cosigner/service.js";
@@ -8,6 +10,12 @@ import { createSpendLimitPolicy, createAllowlistPolicy } from "../policy/rules.j
 import { EnvSigner } from "../signers/EnvSigner.js";
 import { IdempotencyStore, withIdempotency } from "../middleware/idempotency.js";
 import { LifecycleHandler } from "../lifecycle.js";
+import {
+  AntiReplayMiddleware,
+  ReplayError,
+  DEFAULT_REPLAY_WINDOW_SECONDS,
+  DEFAULT_MAX_CLOCK_SKEW_SECONDS,
+} from "../middleware/anti-replay.js";
 import {
   Sep10Service,
   createSep10Challenge,
@@ -598,6 +606,263 @@ describe("SEP-10 authentication", () => {
 
     const claims = verifyJwt(token, "test-secret-key-for-sep10-integration");
     expect(claims.sub).toBe(clientKeypair.publicKey());
+  });
+});
+
+describe("Wallet metadata endpoints", () => {
+  const WALLET = Keypair.random().publicKey();
+  const OTHER_WALLET = Keypair.random().publicKey();
+
+  function createRegistry() {
+    return new WalletRegistry();
+  }
+
+  it("PATCH /wallets/:address updates label, tags and metadata for operator", async () => {
+    const registry = createRegistry();
+    const app = createWalletMetadataApp(registry);
+
+    const res = await app.request(`/wallets/${WALLET}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", "x-role": "operator" },
+      body: JSON.stringify({
+        label: "Treasury hot wallet",
+        tags: ["treasury", "hot"],
+        metadata: { ownerContact: "ops@example.com" },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.wallet.label).toBe("Treasury hot wallet");
+    expect(body.wallet.tags).toEqual(["treasury", "hot"]);
+    expect(body.wallet.metadata.ownerContact).toBe("ops@example.com");
+  });
+
+  it("PATCH /wallets/:address is allowed for admin", async () => {
+    const registry = createRegistry();
+    const app = createWalletMetadataApp(registry);
+
+    const res = await app.request(`/wallets/${WALLET}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", "x-role": "admin" },
+      body: JSON.stringify({ label: "Admin label" }),
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  it("PATCH /wallets/:address is denied for auditor (RBAC)", async () => {
+    const registry = createRegistry();
+    const app = createWalletMetadataApp(registry);
+
+    const res = await app.request(`/wallets/${WALLET}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", "x-role": "auditor" },
+      body: JSON.stringify({ label: "Nope" }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(registry.get(WALLET)?.label).toBeUndefined();
+  });
+
+  it("PATCH /wallets/:address rejects oversized label", async () => {
+    const registry = createRegistry();
+    const app = createWalletMetadataApp(registry);
+
+    const res = await app.request(`/wallets/${WALLET}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", "x-role": "operator" },
+      body: JSON.stringify({ label: "x".repeat(5000) }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("PATCH /wallets/:address rejects too many tags", async () => {
+    const registry = createRegistry();
+    const app = createWalletMetadataApp(registry);
+
+    const res = await app.request(`/wallets/${WALLET}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", "x-role": "operator" },
+      body: JSON.stringify({ tags: Array.from({ length: 100 }, (_, i) => `tag-${i}`) }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("PATCH /wallets/:address rejects oversized metadata", async () => {
+    const registry = createRegistry();
+    const app = createWalletMetadataApp(registry);
+
+    const res = await app.request(`/wallets/${WALLET}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", "x-role": "operator" },
+      body: JSON.stringify({ metadata: { blob: "y".repeat(20_000) } }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("GET /wallets?tag= filters wallets by tag", async () => {
+    const registry = createRegistry();
+    const app = createWalletMetadataApp(registry);
+
+    await app.request(`/wallets/${WALLET}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", "x-role": "operator" },
+      body: JSON.stringify({ tags: ["treasury", "hot"] }),
+    });
+    await app.request(`/wallets/${OTHER_WALLET}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", "x-role": "operator" },
+      body: JSON.stringify({ tags: ["cold"] }),
+    });
+
+    const res = await app.request(`/wallets?tag=treasury`, {
+      headers: { "x-role": "auditor" },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.wallets).toHaveLength(1);
+    expect(body.wallets[0].address).toBe(WALLET);
+  });
+});
+
+describe("Health endpoint", () => {
+  it("public /health returns only {status} with no hostnames", async () => {
+    const app = createHealthApp();
+
+    const res = await app.request("/health");
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(Object.keys(body)).toEqual(["status"]);
+    expect(body.status).toBe("ok");
+
+    const raw = JSON.stringify(body);
+    expect(raw).not.toMatch(/localhost|127\.0\.0\.1|:\d{2,5}/);
+    expect(raw).not.toMatch(/version|host|error/i);
+  });
+
+  it("/health/details requires admin auth", async () => {
+    const app = createHealthApp();
+
+    const unauth = await app.request("/health/details");
+    expect(unauth.status).toBe(401);
+
+    const auditor = await app.request("/health/details", {
+      headers: { "x-role": "auditor" },
+    });
+    expect(auditor.status).toBe(403);
+
+    const admin = await app.request("/health/details", {
+      headers: { "x-role": "admin" },
+    });
+    expect(admin.status).toBe(200);
+    const body = await admin.json();
+    expect(body.dependencies).toBeDefined();
+  });
+});
+
+describe("Anti-replay middleware", () => {
+  function createReplayApp(options?: {
+    windowSeconds?: number;
+    maxClockSkewSeconds?: number;
+  }) {
+    const middleware = new AntiReplayMiddleware(options);
+    const app = createAntiReplayApp(middleware);
+    return { app, middleware };
+  }
+
+  function signedRequest(app: any, timestamp: number, nonce: string) {
+    return app.request("/protected", {
+      method: "POST",
+      headers: {
+        "x-timestamp": String(timestamp),
+        "x-nonce": nonce,
+      },
+    });
+  }
+
+  it("exposes configurable window and skew defaults", () => {
+    expect(DEFAULT_REPLAY_WINDOW_SECONDS).toBeGreaterThan(0);
+    expect(DEFAULT_MAX_CLOCK_SKEW_SECONDS).toBeGreaterThanOrEqual(0);
+
+    const { middleware } = createReplayApp({
+      windowSeconds: 30,
+      maxClockSkewSeconds: 5,
+    });
+    expect(middleware.windowSeconds).toBe(30);
+    expect(middleware.maxClockSkewSeconds).toBe(5);
+  });
+
+  it("accepts a request within the window", async () => {
+    const { app } = createReplayApp({ windowSeconds: 60, maxClockSkewSeconds: 5 });
+    const now = Math.floor(Date.now() / 1000);
+
+    const res = await signedRequest(app, now, "nonce-ok");
+    expect(res.status).toBe(200);
+  });
+
+  it("accepts a request within the allowed clock skew (future timestamp)", async () => {
+    const { app } = createReplayApp({ windowSeconds: 60, maxClockSkewSeconds: 5 });
+    const now = Math.floor(Date.now() / 1000);
+
+    const res = await signedRequest(app, now + 4, "nonce-skew-ok");
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects a timestamp beyond the allowed clock skew with a skew error", async () => {
+    const { app } = createReplayApp({ windowSeconds: 60, maxClockSkewSeconds: 5 });
+    const now = Math.floor(Date.now() / 1000);
+
+    const res = await signedRequest(app, now + 60, "nonce-skew-bad");
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("CLOCK_SKEW");
+  });
+
+  it("rejects a stale timestamp beyond the window with a replay error", async () => {
+    const { app } = createReplayApp({ windowSeconds: 10, maxClockSkewSeconds: 5 });
+    const now = Math.floor(Date.now() / 1000);
+
+    const res = await signedRequest(app, now - 60, "nonce-stale");
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("REPLAY");
+  });
+
+  it("rejects a replayed nonce with a replay error", async () => {
+    const { app } = createReplayApp({ windowSeconds: 60, maxClockSkewSeconds: 5 });
+    const now = Math.floor(Date.now() / 1000);
+
+    const first = await signedRequest(app, now, "nonce-dup");
+    expect(first.status).toBe(200);
+
+    const second = await signedRequest(app, now, "nonce-dup");
+    expect(second.status).toBe(400);
+    const body = await second.json();
+    expect(body.code).toBe("REPLAY");
+  });
+
+  it("accepts a request exactly at the window boundary", async () => {
+    const { app } = createReplayApp({ windowSeconds: 10, maxClockSkewSeconds: 5 });
+    const now = Math.floor(Date.now() / 1000);
+
+    const res = await signedRequest(app, now - 10, "nonce-boundary");
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects a request one second past the window boundary", async () => {
+    const { app } = createReplayApp({ windowSeconds: 10, maxClockSkewSeconds: 5 });
+    const now = Math.floor(Date.now() / 1000);
+
+    const res = await signedRequest(app, now - 11, "nonce-boundary-over");
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("REPLAY");
   });
 });
 

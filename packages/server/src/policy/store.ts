@@ -1,9 +1,69 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Policy, PolicyStore } from "@lumen/types";
+import { validatePolicyRules } from "../engine.js";
+
+/**
+ * Immutable snapshot of a policy at a point in time. Created on every
+ * create/update so operators can audit and roll back changes (#500).
+ */
+export interface PolicyVersion {
+  policyId: string;
+  version: number;
+  author: string;
+  timestamp: number;
+  policy: Policy;
+}
+
+/**
+ * Serialisable representation of a policy for import/export (#501).
+ */
+export interface PolicyExport {
+  walletId: string;
+  version: number;
+  createdAt: string;
+  rules: Policy["rules"];
+}
+
+function clonePolicy(policy: Policy): Policy {
+  return JSON.parse(JSON.stringify(policy)) as Policy;
+}
+
+function toExport(policy: Policy): PolicyExport {
+  const createdAt =
+    policy.createdAt instanceof Date ? policy.createdAt.toISOString() : String(policy.createdAt);
+  return {
+    walletId: policy.walletId,
+    version: typeof policy.version === "number" ? policy.version : 1,
+    createdAt,
+    rules: clonePolicy(policy).rules,
+  };
+}
+
+function fromExport(data: unknown): Policy {
+  if (!data || typeof data !== "object") {
+    throw new Error("Invalid policy JSON: expected an object");
+  }
+  const obj = data as Record<string, unknown>;
+  if (typeof obj.walletId !== "string" || !obj.walletId) {
+    throw new Error("Invalid policy JSON: missing walletId");
+  }
+  if (!obj.rules || typeof obj.rules !== "object") {
+    throw new Error("Invalid policy JSON: missing rules");
+  }
+  const createdAt =
+    typeof obj.createdAt === "string" && obj.createdAt ? new Date(obj.createdAt) : new Date();
+  return {
+    walletId: obj.walletId,
+    version: typeof obj.version === "number" ? obj.version : 1,
+    createdAt,
+    rules: obj.rules as Policy["rules"],
+  };
+}
 
 export class InMemoryPolicyStore implements PolicyStore {
   private policies: Map<string, Policy> = new Map();
+  private versions: Map<string, PolicyVersion[]> = new Map();
   private spendTracking: Map<string, Map<string, { dailyTotal: number; txCount: number }>> =
     new Map();
   private velocityTracking: Map<string, number[]> = new Map();
@@ -16,12 +76,72 @@ export class InMemoryPolicyStore implements PolicyStore {
     return Array.from(this.policies.values());
   }
 
-  async savePolicy(policy: Policy): Promise<void> {
+  async savePolicy(policy: Policy, author: string = "system"): Promise<void> {
     this.policies.set(policy.walletId, policy);
+    await this.savePolicyVersion(policy, author);
+  }
+
+  async savePolicyVersion(policy: Policy, author: string = "system"): Promise<PolicyVersion> {
+    const existing = this.versions.get(policy.walletId) ?? [];
+    const nextVersion =
+      existing.length > 0 ? existing[existing.length - 1].version + 1 : policy.version || 1;
+    const snapshot: PolicyVersion = {
+      policyId: policy.walletId,
+      version: nextVersion,
+      author,
+      timestamp: Date.now(),
+      policy: clonePolicy(policy),
+    };
+    existing.push(snapshot);
+    this.versions.set(policy.walletId, existing);
+    return snapshot;
+  }
+
+  async listPolicyVersions(policyId: string): Promise<PolicyVersion[]> {
+    return [...(this.versions.get(policyId) ?? [])];
+  }
+
+  async getPolicyVersion(policyId: string, version: number): Promise<PolicyVersion | null> {
+    const list = this.versions.get(policyId) ?? [];
+    return list.find((v) => v.version === version) ?? null;
+  }
+
+  async rollbackPolicy(
+    policyId: string,
+    targetVersion: number,
+    author: string = "system",
+  ): Promise<Policy | null> {
+    const target = await this.getPolicyVersion(policyId, targetVersion);
+    if (!target) return null;
+    const restored = clonePolicy(target.policy);
+    restored.walletId = policyId;
+    const list = this.versions.get(policyId) ?? [];
+    restored.version = list.length > 0 ? list[list.length - 1].version + 1 : targetVersion + 1;
+    this.policies.set(policyId, restored);
+    await this.savePolicyVersion(restored, author);
+    return restored;
+  }
+
+  async exportPolicy(policyId: string): Promise<PolicyExport | null> {
+    const policy = this.policies.get(policyId);
+    if (!policy) return null;
+    return toExport(policy);
+  }
+
+  async importPolicy(json: string | unknown, author: string = "system"): Promise<Policy> {
+    const parsed = typeof json === "string" ? JSON.parse(json) : json;
+    const policy = fromExport(parsed);
+    const validation = validatePolicyRules(policy.rules);
+    if (!validation.valid) {
+      throw new Error(`Invalid policy rules: ${validation.errors.join("; ")}`);
+    }
+    await this.savePolicy(policy, author);
+    return policy;
   }
 
   async deletePolicy(walletId: string): Promise<void> {
     this.policies.delete(walletId);
+    this.versions.delete(walletId);
     this.spendTracking.delete(walletId);
     this.velocityTracking.delete(walletId);
   }
@@ -65,6 +185,7 @@ export class InMemoryPolicyStore implements PolicyStore {
 export class FilePolicyStore implements PolicyStore {
   private readonly filePath: string;
   private policies: Map<string, Policy> = new Map();
+  private versions: Map<string, PolicyVersion[]> = new Map();
   private spendTracking: Map<string, Map<string, { dailyTotal: number; txCount: number }>> =
     new Map();
   private velocityTracking: Map<string, number[]> = new Map();
@@ -80,30 +201,49 @@ export class FilePolicyStore implements PolicyStore {
         const raw = fs.readFileSync(this.filePath, "utf-8");
         if (raw.trim()) {
           const parsed = JSON.parse(raw);
+          let policyItems: unknown[] = [];
+          let versionItems: unknown[] = [];
           if (Array.isArray(parsed)) {
-            for (const item of parsed) {
-              if (item && item.walletId) {
-                if (item.createdAt && typeof item.createdAt === "string") {
-                  item.createdAt = new Date(item.createdAt);
+            policyItems = parsed;
+          } else if (typeof parsed === "object" && parsed !== null) {
+            const obj = parsed as Record<string, unknown>;
+            if (Array.isArray(obj.versions)) {
+              versionItems = obj.versions;
+            }
+            if (Array.isArray(obj.policies)) {
+              policyItems = obj.policies;
+            } else {
+              for (const item of Object.values(obj)) {
+                if (item && typeof item === "object" && "walletId" in (item as object)) {
+                  policyItems.push(item);
                 }
-                if (typeof item.version !== "number") {
-                  item.version = 1;
-                }
-                this.policies.set(item.walletId, item);
               }
             }
-          } else if (typeof parsed === "object" && parsed !== null) {
-            for (const item of Object.values(parsed)) {
-              const p = item as Policy;
-              if (p && p.walletId) {
-                if (p.createdAt && typeof p.createdAt === "string") {
-                  p.createdAt = new Date(p.createdAt);
-                }
-                if (typeof p.version !== "number") {
-                  p.version = 1;
-                }
-                this.policies.set(p.walletId, p);
+          }
+          for (const item of policyItems) {
+            const p = item as Policy;
+            if (p && p.walletId) {
+              if (p.createdAt && typeof p.createdAt === "string") {
+                p.createdAt = new Date(p.createdAt);
               }
+              if (typeof p.version !== "number") {
+                p.version = 1;
+              }
+              this.policies.set(p.walletId, p);
+            }
+          }
+          for (const item of versionItems) {
+            const v = item as PolicyVersion;
+            if (v && typeof v.policyId === "string" && v.policy) {
+              if (v.policy.createdAt && typeof v.policy.createdAt === "string") {
+                (v.policy as unknown as { createdAt: unknown }).createdAt = new Date(
+                  v.policy.createdAt,
+                );
+              }
+              const list = this.versions.get(v.policyId) ?? [];
+              list.push(v);
+              list.sort((a, b) => a.version - b.version);
+              this.versions.set(v.policyId, list);
             }
           }
         }
@@ -118,7 +258,15 @@ export class FilePolicyStore implements PolicyStore {
     await fs.promises.mkdir(dir, { recursive: true });
 
     const tempPath = `${this.filePath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2)}`;
-    const data = JSON.stringify(Array.from(this.policies.values()), null, 2);
+    const allVersions: PolicyVersion[] = [];
+    for (const list of this.versions.values()) {
+      allVersions.push(...list);
+    }
+    const data = JSON.stringify(
+      { policies: Array.from(this.policies.values()), versions: allVersions },
+      null,
+      2,
+    );
 
     await fs.promises.writeFile(tempPath, data, "utf-8");
     await fs.promises.rename(tempPath, this.filePath);
@@ -132,13 +280,74 @@ export class FilePolicyStore implements PolicyStore {
     return Array.from(this.policies.values());
   }
 
-  async savePolicy(policy: Policy): Promise<void> {
+  async savePolicy(policy: Policy, author: string = "system"): Promise<void> {
     this.policies.set(policy.walletId, policy);
+    await this.savePolicyVersion(policy, author);
     await this.persist();
+  }
+
+  async savePolicyVersion(policy: Policy, author: string = "system"): Promise<PolicyVersion> {
+    const existing = this.versions.get(policy.walletId) ?? [];
+    const nextVersion =
+      existing.length > 0 ? existing[existing.length - 1].version + 1 : policy.version || 1;
+    const snapshot: PolicyVersion = {
+      policyId: policy.walletId,
+      version: nextVersion,
+      author,
+      timestamp: Date.now(),
+      policy: clonePolicy(policy),
+    };
+    existing.push(snapshot);
+    this.versions.set(policy.walletId, existing);
+    return snapshot;
+  }
+
+  async listPolicyVersions(policyId: string): Promise<PolicyVersion[]> {
+    return [...(this.versions.get(policyId) ?? [])];
+  }
+
+  async getPolicyVersion(policyId: string, version: number): Promise<PolicyVersion | null> {
+    const list = this.versions.get(policyId) ?? [];
+    return list.find((v) => v.version === version) ?? null;
+  }
+
+  async rollbackPolicy(
+    policyId: string,
+    targetVersion: number,
+    author: string = "system",
+  ): Promise<Policy | null> {
+    const target = await this.getPolicyVersion(policyId, targetVersion);
+    if (!target) return null;
+    const restored = clonePolicy(target.policy);
+    restored.walletId = policyId;
+    const list = this.versions.get(policyId) ?? [];
+    restored.version = list.length > 0 ? list[list.length - 1].version + 1 : targetVersion + 1;
+    this.policies.set(policyId, restored);
+    await this.savePolicyVersion(restored, author);
+    await this.persist();
+    return restored;
+  }
+
+  async exportPolicy(policyId: string): Promise<PolicyExport | null> {
+    const policy = this.policies.get(policyId);
+    if (!policy) return null;
+    return toExport(policy);
+  }
+
+  async importPolicy(json: string | unknown, author: string = "system"): Promise<Policy> {
+    const parsed = typeof json === "string" ? JSON.parse(json) : json;
+    const policy = fromExport(parsed);
+    const validation = validatePolicyRules(policy.rules);
+    if (!validation.valid) {
+      throw new Error(`Invalid policy rules: ${validation.errors.join("; ")}`);
+    }
+    await this.savePolicy(policy, author);
+    return policy;
   }
 
   async deletePolicy(walletId: string): Promise<void> {
     this.policies.delete(walletId);
+    this.versions.delete(walletId);
     this.spendTracking.delete(walletId);
     this.velocityTracking.delete(walletId);
     await this.persist();
@@ -395,16 +604,87 @@ export class RedisPolicyStore implements PolicyStore {
     return policies;
   }
 
-  async savePolicy(policy: Policy): Promise<void> {
+  private versionsKey(policyId: string): string {
+    return `${this.keyPrefix}policies:versions:${policyId}`;
+  }
+
+  async savePolicy(policy: Policy, author: string = "system"): Promise<void> {
     const key = `${this.keyPrefix}policy:${policy.walletId}`;
     await this.redis.set(key, JSON.stringify(policy));
+    await this.savePolicyVersion(policy, author);
     // Best-effort broadcast; never blocks or fails the save.
     void publishPolicyUpdate(this.redis, policy.walletId, "save");
+  }
+
+  async savePolicyVersion(policy: Policy, author: string = "system"): Promise<PolicyVersion> {
+    const existing = await this.listPolicyVersions(policy.walletId);
+    const nextVersion =
+      existing.length > 0 ? existing[existing.length - 1].version + 1 : policy.version || 1;
+    const snapshot: PolicyVersion = {
+      policyId: policy.walletId,
+      version: nextVersion,
+      author,
+      timestamp: Date.now(),
+      policy: clonePolicy(policy),
+    };
+    existing.push(snapshot);
+    await this.redis.set(this.versionsKey(policy.walletId), JSON.stringify(existing));
+    return snapshot;
+  }
+
+  async listPolicyVersions(policyId: string): Promise<PolicyVersion[]> {
+    const raw = await this.redis.get(this.versionsKey(policyId));
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return (parsed as PolicyVersion[]).sort((a, b) => a.version - b.version);
+    } catch {
+      return [];
+    }
+  }
+
+  async getPolicyVersion(policyId: string, version: number): Promise<PolicyVersion | null> {
+    const list = await this.listPolicyVersions(policyId);
+    return list.find((v) => v.version === version) ?? null;
+  }
+
+  async rollbackPolicy(
+    policyId: string,
+    targetVersion: number,
+    author: string = "system",
+  ): Promise<Policy | null> {
+    const target = await this.getPolicyVersion(policyId, targetVersion);
+    if (!target) return null;
+    const restored = clonePolicy(target.policy);
+    restored.walletId = policyId;
+    const list = await this.listPolicyVersions(policyId);
+    restored.version = list.length > 0 ? list[list.length - 1].version + 1 : targetVersion + 1;
+    await this.savePolicy(restored, author);
+    return restored;
+  }
+
+  async exportPolicy(policyId: string): Promise<PolicyExport | null> {
+    const policy = await this.getPolicy(policyId);
+    if (!policy) return null;
+    return toExport(policy);
+  }
+
+  async importPolicy(json: string | unknown, author: string = "system"): Promise<Policy> {
+    const parsed = typeof json === "string" ? JSON.parse(json) : json;
+    const policy = fromExport(parsed);
+    const validation = validatePolicyRules(policy.rules);
+    if (!validation.valid) {
+      throw new Error(`Invalid policy rules: ${validation.errors.join("; ")}`);
+    }
+    await this.savePolicy(policy, author);
+    return policy;
   }
 
   async deletePolicy(walletId: string): Promise<void> {
     const key = `${this.keyPrefix}policy:${walletId}`;
     await this.redis.del(key);
+    await this.redis.del(this.versionsKey(walletId));
     void publishPolicyUpdate(this.redis, walletId, "delete");
   }
 

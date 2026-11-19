@@ -56,3 +56,45 @@ export function createMaxOperationsPolicy(walletId: string, maxOperations: numbe
   const rule: MaxOperationsRule = { type: "max_operations", maxOperations };
   return { id: crypto.randomUUID(), walletId, rules: [rule], createdAt: new Date() };
 }
+
+export type PolicyTemplateName = "conservative" | "payroll" | "dapp-session";
+
+export function createConservativeTemplatePolicy(walletId: string): Policy {
+  const rules: Policy["rules"] = [
+    { type: "spend_limit", asset: "XLM", maxPerTx: "100", maxDaily: "500" },
+    { type: "velocity", maxTransactions: 5, windowMinutes: 60 },
+    { type: "allowlist", destinations: [] },
+  ];
+  return { id: crypto.randomUUID(), walletId, rules, createdAt: new Date() };
+}
+
+export function createPayrollTemplatePolicy(walletId: string): Policy {
+  const rules: Policy["rules"] = [
+    { type: "spend_limit", asset: "XLM", maxPerTx: "1000", maxDaily: "10000" },
+    { type: "timebounds", maxWindowSeconds: 3600, allowUnbounded: false },
+  ];
+  return { id: crypto.randomUUID(), walletId, rules, createdAt: new Date() };
+}
+
+export function createDappSessionTemplatePolicy(walletId: string): Policy {
+  const rules: Policy["rules"] = [
+    { type: "session_key", maxDurationSeconds: 3600 },
+    { type: "contract_allowlist", contracts: [] },
+    { type: "max_operations", maxOperations: 10 },
+  ];
+  return { id: crypto.randomUUID(), walletId, rules, createdAt: new Date() };
+}
+
+export const POLICY_TEMPLATES: Record<PolicyTemplateName, (walletId: string) => Policy> = {
+  conservative: createConservativeTemplatePolicy,
+  payroll: createPayrollTemplatePolicy,
+  "dapp-session": createDappSessionTemplatePolicy,
+};
+
+export function createPolicyFromTemplate(walletId: string, templateName: PolicyTemplateName): Policy {
+  const factory = POLICY_TEMPLATES[templateName];
+  if (!factory) {
+    throw new Error(`Unknown policy template: ${templateName}`);
+  }
+  return factory(walletId);
+}

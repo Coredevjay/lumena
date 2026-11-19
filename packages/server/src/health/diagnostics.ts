@@ -14,6 +14,17 @@ export interface DeepHealthResult {
   healthy: boolean;
   components: Record<string, ComponentStatus>;
   latencyMs: Record<string, number>;
+  versions?: Record<string, string>;
+}
+
+/** Minimal public health payload. Contains no diagnostic or internal details. */
+export interface PublicHealthResult {
+  status: 'ok' | 'degraded';
+}
+
+/** Detailed health payload returned only to authenticated admins. */
+export interface DetailedHealthResult extends DeepHealthResult {
+  status: 'ok' | 'degraded';
 }
 
 /** Minimal Redis-like client surface used for the ping probe. */
@@ -181,4 +192,24 @@ export async function runDeepHealthCheck(deps: DeepHealthDeps): Promise<DeepHeal
   const healthy = Object.values(components).every((status) => status === 'healthy');
 
   return { healthy, components, latencyMs };
+}
+
+/**
+ * Public health handler. Returns only `{status}` and never performs network
+ * probes or exposes hostnames, versions or error strings.
+ */
+export function runPublicHealth(): PublicHealthResult {
+  return { status: 'ok' };
+}
+
+/**
+ * Detailed health handler for the admin-authenticated `/health/details` route.
+ * Runs the deep probes and returns components, latencies and versions.
+ */
+export async function runDetailedHealth(deps: DeepHealthDeps): Promise<DetailedHealthResult> {
+  const result = await runDeepHealthCheck(deps);
+  return {
+    ...result,
+    status: result.healthy ? 'ok' : 'degraded',
+  };
 }

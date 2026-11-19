@@ -1,3 +1,8 @@
+Looking at this file, it contains only SEP-7 URI building/parsing logic with no network calls or retry loops. There's nothing to change here regarding retry/backoff or AbortSignal — the file has no ad-hoc retry loops and makes no network requests.
+
+The file content remains unchanged:
+
+```ts
 import { StrKey } from "@stellar/stellar-sdk";
 
 const PAY_PREFIX = "web+stellar:pay";

@@ -1,5 +1,82 @@
 # Troubleshooting
 
+## Typed errors and error codes
+
+`@lumen/core` throws a `LumenError` (or one of its subclasses) instead of a
+plain `Error`. Every instance carries a stable `code` you can branch on, an
+optional `cause` (the underlying error, if any) and a human-readable `message`.
+Because the classes are exported from the package entry point, `instanceof`
+checks work across ESM and CJS consumers:
+
+```ts
+import {
+  LumenError,
+  PolicyDeniedError,
+  NetworkError,
+  SignerError,
+} from "@lumen/core";
+
+try {
+  await client.horizon.submitTransaction(tx);
+} catch (err) {
+  if (err instanceof PolicyDeniedError) {
+    // the policy engine rejected the request
+  } else if (err instanceof NetworkError) {
+    // Horizon was unreachable or returned a transport error
+  } else if (err instanceof SignerError) {
+    // signing failed
+  } else if (err instanceof LumenError) {
+    switch (err.code) {
+      case "NETWORK_TIMEOUT":
+        // ...
+        break;
+    }
+  }
+}
+```
+
+Prefer branching on `code` when you only need the error category, and on
+`instanceof` when you need the subclass-specific properties. Codes are stable
+across releases; messages are not.
+
+### Error codes
+
+| Code | Subclass | Meaning | Remediation |
+| --- | --- | --- | --- |
+| `LUMEN_ERROR` | `LumenError` | Generic base error raised when no more specific code applies. | Inspect `cause` for details. |
+| `POLICY_DENIED` | `PolicyDeniedError` | The policy engine rejected the request. | Adjust the request or the wallet policy. |
+| `POLICY_NOT_FOUND` | `PolicyDeniedError` | No policy is configured for the wallet. | Create a policy for the wallet before sending. |
+| `NETWORK_ERROR` | `NetworkError` | A transport-level failure talking to Horizon or another service. | Retry the request; check connectivity. |
+| `NETWORK_TIMEOUT` | `NetworkError` | The request exceeded its timeout or was aborted. | Retry with a longer timeout or check the network. |
+| `NETWORK_RATE_LIMITED` | `NetworkError` | The remote service returned a rate-limit response. | Back off and retry later. |
+| `SIGNER_ERROR` | `SignerError` | Signing failed for an unspecified reason. | Check the signer configuration and key material. |
+| `SIGNER_UNAVAILABLE` | `SignerError` | The configured signer could not be reached. | Verify the signer service is running and reachable. |
+| `SIGNER_REJECTED` | `SignerError` | The signer refused to sign the payload. | Review the signer's policy and the payload being signed. |
+
+## Retries and cancellation
+
+Horizon calls, streaming helpers and SEP clients share a single retry
+implementation from `@lumen/core` (`utils/retry.ts`). It applies exponential
+backoff with jitter and honours an `AbortSignal`, so a single signal cancels
+both the in-flight request and any pending retry:
+
+```ts
+import { withRetry } from "@lumen/core";
+
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 5_000);
+
+const account = await withRetry(
+  () => client.horizon.loadAccount(publicKey),
+  { signal: controller.signal, maxAttempts: 5 },
+);
+```
+
+Pass the same `signal` to streaming helpers and SEP clients; aborting it stops
+the stream and rejects any pending retry with a `NetworkError` whose `code` is
+`NETWORK_TIMEOUT`. Do not write ad-hoc retry loops in application code — use
+`withRetry` so backoff, jitter and cancellation behave consistently.
+
 ## Transaction result codes
 
 When Horizon rejects a transaction, Lumen maps the raw result codes to a typed,

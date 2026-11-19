@@ -5,22 +5,36 @@ import type { WebhookDispatcher } from "../webhook/dispatcher.js";
 import { trackOperation } from "../lifecycle.js";
 import type { SequenceAllocator, SequenceReservation } from "./sequence-allocator.js";
 
+/** Default maximum fee (in stroops) the sponsor will ever pay for a fee-bump. */
+export const DEFAULT_MAX_FEE_STROOPS = 10_000_000;
+
+/** Thrown when a fee-bump would exceed the configured maximum fee cap. */
+export class FeeCapExceededError extends Error {
+  readonly fee: number;
+  readonly maxFeeStroops: number;
+
+  constructor(fee: number, maxFeeStroops: number) {
+    super(
+      `Fee-bump fee ${fee} stroops exceeds maximum allowed ${maxFeeStroops} stroops`,
+    );
+    this.name = "FeeCapExceededError";
+    this.fee = fee;
+    this.maxFeeStroops = maxFeeStroops;
+  }
+}
+
 /**
- * A single sponsor (fee payer) account in the rotation registry.
- *
- * - `signer`   – signs fee-bump envelopes for this account.
- * - `weight`   – relative selection weight (must be > 0). Higher weight means
- *                the account is picked more often. Weights are normalised at
- *                selection time, so they need not sum to any particular value.
- * - `draining` – when true the account is excluded from new selections. It
- *                remains usable for in-flight work but receives no new
- *                fee-bumps, allowing its balance to be swept and the account
- *                retired without downtime.
+ * Resolve the maximum fee cap from an explicit option or the
+ * `MAX_FEE_STROOPS` env var, falling back to {@link DEFAULT_MAX_FEE_STROOPS}.
  */
-export interface SponsorAccount {
-  signer: Signer;
-  weight: number;
-  draining?: boolean;
+function resolveMaxFeeStroops(explicit?: number): number {
+  if (explicit !== undefined) return explicit;
+  const fromEnv = process.env.MAX_FEE_STROOPS;
+  if (fromEnv !== undefined && fromEnv.trim() !== "") {
+    const parsed = Number(fromEnv);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return DEFAULT_MAX_FEE_STROOPS;
 }
 
 export interface FeeSponsorOpts {
@@ -40,6 +54,11 @@ export interface FeeSponsorOpts {
    */
   sponsors?: SponsorAccount[];
   baseFee?: string;
+  /**
+   * Maximum fee (in stroops) the sponsor will pay for a single fee-bump.
+   * Defaults to `MAX_FEE_STROOPS` env var, then {@link DEFAULT_MAX_FEE_STROOPS}.
+   */
+  maxFeeStroops?: number;
   webhookDispatcher?: WebhookDispatcher;
   /**
    * Optional distributed sequence allocator. When provided, each fee-bump
@@ -51,16 +70,20 @@ export interface FeeSponsorOpts {
   maxSubmitAttempts?: number;
   /** Base delay (ms) for exponential backoff. Default 100. */
   retryBaseDelayMs?: number;
+  /** Called whenever a tx_bad_seq triggers an automatic resequence. */
+  onResequence?: () => void;
 }
 
 export class FeeSponsorService {
   private client: StellarClient;
   private sponsors: SponsorAccount[];
   private baseFee: string;
+  private maxFeeStroops: number;
   private webhookDispatcher?: WebhookDispatcher;
   private sequenceAllocator?: SequenceAllocator;
   private maxSubmitAttempts: number;
   private retryBaseDelayMs: number;
+  private overCapCount = 0;
 
   constructor(opts: FeeSponsorOpts) {
     this.client = opts.client;
@@ -89,10 +112,38 @@ export class FeeSponsorService {
     }
 
     this.baseFee = opts.baseFee ?? "1000000";
+    this.maxFeeStroops = resolveMaxFeeStroops(opts.maxFeeStroops);
     this.webhookDispatcher = opts.webhookDispatcher;
     this.sequenceAllocator = opts.sequenceAllocator;
     this.maxSubmitAttempts = opts.maxSubmitAttempts ?? 5;
     this.retryBaseDelayMs = opts.retryBaseDelayMs ?? 100;
+    this.onResequence = opts.onResequence;
+  }
+
+  /** Number of automatic resequence events observed by this service. */
+  get resequenceEvents(): number {
+    return this.resequenceCount;
+  }
+
+  /** Current maximum fee cap (stroops). */
+  get maxFee(): number {
+    return this.maxFeeStroops;
+  }
+
+  /** Number of fee-bumps rejected for exceeding the cap (surge guard metric). */
+  get feeCapExceededCount(): number {
+    return this.overCapCount;
+  }
+
+  /**
+   * Enforce the fee cap on a built fee-bump transaction. Increments the
+   * over-cap metric and throws {@link FeeCapExceededError} when exceeded.
+   */
+  private enforceFeeCap(fee: number): void {
+    if (!Number.isFinite(fee) || fee > this.maxFeeStroops) {
+      this.overCapCount += 1;
+      throw new FeeCapExceededError(fee, this.maxFeeStroops);
+    }
   }
 
   /**
@@ -180,6 +231,10 @@ export class FeeSponsorService {
         this.client.networkPassphrase,
       );
 
+      // Surge guard: reject before signing/submitting if the bumped fee would
+      // exceed the configured cap, protecting the sponsor account.
+      this.enforceFeeCap(Number(feeBump.fee));
+
       // Apply the reserved sequence number (if any) so concurrent fee-bumps
       // from the same sponsor account don't collide.
       if (sequence !== undefined) {
@@ -205,9 +260,18 @@ export class FeeSponsorService {
   private isBadSeqError(err: unknown): boolean {
     const anyErr = err as { response?: { data?: { extras?: { result_codes?: { transaction?: string } } } }; message?: string };
     const code = anyErr?.response?.data?.extras?.result_codes?.transaction;
-    if (code === "txBAD_SEQ") return true;
+    if (code === "txBAD_SEQ" || code === "tx_bad_seq") return true;
     const msg = typeof anyErr?.message === "string" ? anyErr.message : "";
-    return msg.includes("txBAD_SEQ");
+    return msg.includes("txBAD_SEQ") || msg.includes("tx_bad_seq");
+  }
+
+  private recordResequence(): void {
+    this.resequenceCount += 1;
+    try {
+      this.onResequence?.();
+    } catch {
+      // Metrics hooks must never break submission.
+    }
   }
 
   private async delay(ms: number): Promise<void> {
@@ -218,10 +282,9 @@ export class FeeSponsorService {
     return trackOperation("fee-bump:submit", async () => {
       let lastError: unknown;
       let reservation: SequenceReservation | undefined;
-      // Pick the sponsor once per submission so retries stay on the same
-      // account (and its reserved sequence space).
-      const sponsor = this.selectSponsor();
-      const sponsorKey = sponsor.signer.publicKey();
+      // tx_bad_seq resequencing is limited to exactly one retry, independent
+      // of the general exponential-backoff attempt budget.
+      let resequenced = false;
 
       for (let attempt = 0; attempt < this.maxSubmitAttempts; attempt++) {
         // Reserve a fresh sequence number for each attempt when an allocator
@@ -233,12 +296,14 @@ export class FeeSponsorService {
         const feeBumpXdr = await this.wrapFeeBump(innerTxXdr, reservation?.sequence, sponsor);
         const parsed = TransactionBuilder.fromXDR(feeBumpXdr, this.client.networkPassphrase);
 
+        // Re-enforce the cap on every attempt as a defense-in-depth guard.
+        this.enforceFeeCap(Number(parsed.fee));
+
         let result: Awaited<ReturnType<StellarClient["horizon"]["submitTransaction"]>>;
         try {
           result = await this.client.horizon.submitTransaction(parsed);
         } catch (err) {
-          if (this.isBadSeqError(err) && attempt < this.maxSubmitAttempts - 1) {
-            lastError = err;
+          if (this.isBadSeqError(err)) {
             // Roll back the reservation so the sequence can be reused.
             if (this.sequenceAllocator && reservation !== undefined) {
               await this.sequenceAllocator
@@ -246,9 +311,15 @@ export class FeeSponsorService {
                 .catch(() => {});
             }
             reservation = undefined;
-            const backoff = this.retryBaseDelayMs * 2 ** attempt;
-            await this.delay(backoff);
-            continue;
+
+            // Automatic resequencing: refresh from the allocator, rebuild the
+            // fee-bump envelope and retry exactly once.
+            if (!resequenced) {
+              resequenced = true;
+              lastError = err;
+              this.recordResequence();
+              continue;
+            }
           }
           throw err;
         }

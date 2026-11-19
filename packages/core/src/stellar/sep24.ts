@@ -14,6 +14,8 @@
  * Reference: https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0024.md
  */
 
+import { retry, sleep, throwIfAborted } from '../../utils/retry';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -66,6 +68,8 @@ export interface Sep24InteractiveOpts {
   jwt?: string;
   /** Additional anchor-specific key/value fields. */
   extraFields?: Record<string, string>;
+  /** Optional AbortSignal to cancel the request. */
+  signal?: AbortSignal;
 }
 
 /** Response returned after initiating an interactive flow. */
@@ -134,6 +138,8 @@ export interface Sep24PollOpts {
   maxAttempts?: number;
   /** Callback invoked on every status update. */
   onStatusUpdate?: (tx: Sep24Transaction) => void;
+  /** Optional AbortSignal to cancel polling. */
+  signal?: AbortSignal;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,16 +177,11 @@ export class Sep24Client {
   /**
    * Fetches the anchor's capability info, including supported assets and
    * whether SEP-10 authentication is required.
+   *
+   * @param signal Optional AbortSignal to cancel the request.
    */
-  async fetchInfo(): Promise<Sep24Info> {
-    const response = await fetch(`${this.anchorUrl}/info`);
-    if (!response.ok) {
-      throw new Error(
-        `SEP-24 GET /info failed: ${response.status} ${response.statusText}`,
-      );
-    }
-
-    const raw = (await response.json()) as any;
+  async fetchInfo(signal?: AbortSignal): Promise<Sep24Info> {
+    const raw = await this.requestJson<any>('/info', { signal });
     const assets: Record<string, Sep24AssetInfo> = {};
 
     for (const [code, entry] of Object.entries<any>(raw.assets ?? {})) {
@@ -251,18 +252,13 @@ export class Sep24Client {
       headers['Authorization'] = `Bearer ${opts.jwt}`;
     }
 
-    const response = await fetch(`${this.anchorUrl}${endpoint}`, {
+    const raw = await this.requestJson<any>(endpoint, {
       method: 'POST',
       headers,
       body,
+      signal: opts.signal,
     });
 
-    if (!response.ok) {
-      const text = await response.text().catch(() => response.statusText);
-      throw new Error(`SEP-24 ${endpoint} failed: ${response.status} — ${text}`);
-    }
-
-    const raw = (await response.json()) as any;
     return {
       id:   raw.id,
       url:  raw.url,
@@ -277,22 +273,22 @@ export class Sep24Client {
   /**
    * Fetches a single transaction by its anchor-assigned ID.
    *
-   * @param id  The transaction ID returned by initiateDeposit or initiateWithdrawal.
-   * @param jwt Optional SEP-10 JWT for authenticated anchors.
+   * @param id     The transaction ID returned by initiateDeposit or initiateWithdrawal.
+   * @param jwt    Optional SEP-10 JWT for authenticated anchors.
+   * @param signal Optional AbortSignal to cancel the request.
    */
-  async fetchTransaction(id: string, jwt?: string): Promise<Sep24Transaction> {
-    const url = `${this.anchorUrl}/transaction?id=${encodeURIComponent(id)}`;
+  async fetchTransaction(
+    id: string,
+    jwt?: string,
+    signal?: AbortSignal,
+  ): Promise<Sep24Transaction> {
     const headers: Record<string, string> = {};
     if (jwt) headers['Authorization'] = `Bearer ${jwt}`;
 
-    const response = await fetch(url, { headers });
-    if (!response.ok) {
-      throw new Error(
-        `SEP-24 GET /transaction failed: ${response.status} ${response.statusText}`,
-      );
-    }
-
-    const raw = (await response.json()) as any;
+    const raw = await this.requestJson<any>(
+      `/transaction?id=${encodeURIComponent(id)}`,
+      { headers, signal },
+    );
     return mapRawTransaction(raw.transaction ?? raw);
   }
 
@@ -302,25 +298,22 @@ export class Sep24Client {
    * @param account Stellar account public key.
    * @param jwt     Optional SEP-10 JWT.
    * @param params  Additional query parameters (e.g. asset_code, no_older_than).
+   * @param signal  Optional AbortSignal to cancel the request.
    */
   async fetchTransactions(
     account: string,
     jwt?: string,
     params: Record<string, string> = {},
+    signal?: AbortSignal,
   ): Promise<Sep24Transaction[]> {
     const qs = new URLSearchParams({ account, ...params }).toString();
-    const url = `${this.anchorUrl}/transactions?${qs}`;
     const headers: Record<string, string> = {};
     if (jwt) headers['Authorization'] = `Bearer ${jwt}`;
 
-    const response = await fetch(url, { headers });
-    if (!response.ok) {
-      throw new Error(
-        `SEP-24 GET /transactions failed: ${response.status} ${response.statusText}`,
-      );
-    }
-
-    const raw = (await response.json()) as any;
+    const raw = await this.requestJson<any>(`/transactions?${qs}`, {
+      headers,
+      signal,
+    });
     return (raw.transactions ?? []).map(mapRawTransaction);
   }
 
@@ -343,20 +336,52 @@ export class Sep24Client {
   ): Promise<Sep24Transaction> {
     const intervalMs  = opts.intervalMs  ?? 3_000;
     const maxAttempts = opts.maxAttempts ?? 60;
+    const { signal } = opts;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const tx = await this.fetchTransaction(id, jwt);
+      throwIfAborted(signal);
+
+      const tx = await this.fetchTransaction(id, jwt, signal);
       opts.onStatusUpdate?.(tx);
 
       if (isTerminalStatus(tx.status)) {
         return tx;
       }
 
-      await sleep(intervalMs);
+      await sleep(intervalMs, signal);
     }
 
     throw new Error(
       `SEP-24 pollTransaction timed out after ${maxAttempts} attempts for transaction ${id}`,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Internal request helper
+  // -------------------------------------------------------------------------
+
+  /**
+   * Performs a request against the anchor, retrying transient failures with
+   * exponential backoff and jitter, and honouring the supplied AbortSignal.
+   */
+  private async requestJson<T>(
+    path: string,
+    init: RequestInit = {},
+  ): Promise<T> {
+    return retry(
+      async () => {
+        const response = await fetch(`${this.anchorUrl}${path}`, init);
+        if (!response.ok) {
+          const text = await response.text().catch(() => response.statusText);
+          const error = new Error(
+            `SEP-24 ${path} failed: ${response.status} — ${text}`,
+          ) as Error & { status?: number };
+          error.status = response.status;
+          throw error;
+        }
+        return (await response.json()) as T;
+      },
+      { signal: init.signal ?? undefined },
     );
   }
 }
@@ -375,10 +400,6 @@ const TERMINAL_STATUSES: ReadonlySet<Sep24TransactionStatus> = new Set([
 
 function isTerminalStatus(status: Sep24TransactionStatus): boolean {
   return TERMINAL_STATUSES.has(status);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**

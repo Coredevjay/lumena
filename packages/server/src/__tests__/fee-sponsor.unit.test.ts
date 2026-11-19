@@ -448,6 +448,172 @@ describe("FeeSponsorService.publicKey", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Multi-sponsor selection (issue #504)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a signer stub backed by a real keypair so that fee-bump envelopes
+ * produced by the service can be parsed and inspected.
+ */
+function makeSigner(keypair: Keypair) {
+  return {
+    publicKey: vi.fn(() => keypair.publicKey()),
+    sign: vi.fn(async (hash: Buffer) => keypair.sign(hash)),
+  };
+}
+
+describe("FeeSponsorService multi-sponsor selection (issue #504)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("respects configured weights over many draws", async () => {
+    const heavy = Keypair.random();
+    const light = Keypair.random();
+
+    const service = new FeeSponsorService({
+      client: makeMockClient(),
+      signers: [
+        { signer: makeSigner(heavy), weight: 3 },
+        { signer: makeSigner(light), weight: 1 },
+      ],
+    });
+
+    const DRAWS = 4000;
+    const counts = new Map<string, number>([
+      [heavy.publicKey(), 0],
+      [light.publicKey(), 0],
+    ]);
+
+    for (let i = 0; i < DRAWS; i++) {
+      const innerXdr = buildSignedInnerTxXdr(
+        Keypair.random(),
+        Keypair.random().publicKey(),
+      );
+      const feeBumpXdr = await service.wrapFeeBump(innerXdr);
+      const feeBump = TransactionBuilder.fromXDR(
+        feeBumpXdr,
+        Networks.STANDALONE,
+      ) as FeeBumpTransaction;
+      counts.set(feeBump.feeSource, (counts.get(feeBump.feeSource) ?? 0) + 1);
+    }
+
+    const heavyShare = (counts.get(heavy.publicKey()) ?? 0) / DRAWS;
+    // Expected share is 3/4 = 0.75; allow generous statistical slack.
+    expect(heavyShare).toBeGreaterThan(0.65);
+    expect(heavyShare).toBeLessThan(0.85);
+    expect(counts.get(light.publicKey())).toBeGreaterThan(0);
+  });
+
+  it("never selects accounts flagged as draining", async () => {
+    const active = Keypair.random();
+    const draining = Keypair.random();
+
+    const service = new FeeSponsorService({
+      client: makeMockClient(),
+      signers: [
+        { signer: makeSigner(active), weight: 1 },
+        { signer: makeSigner(draining), weight: 100, draining: true },
+      ],
+    });
+
+    for (let i = 0; i < 50; i++) {
+      const innerXdr = buildSignedInnerTxXdr(
+        Keypair.random(),
+        Keypair.random().publicKey(),
+      );
+      const feeBumpXdr = await service.wrapFeeBump(innerXdr);
+      const feeBump = TransactionBuilder.fromXDR(
+        feeBumpXdr,
+        Networks.STANDALONE,
+      ) as FeeBumpTransaction;
+      expect(feeBump.feeSource).toBe(active.publicKey());
+    }
+  });
+
+  it("falls back to the single signer when no signers list is provided", async () => {
+    const signer = makeSigner(feePayerKeypair);
+    const service = new FeeSponsorService({ client: makeMockClient(), signer });
+
+    const innerXdr = buildSignedInnerTxXdr(
+      Keypair.random(),
+      Keypair.random().publicKey(),
+    );
+    const feeBumpXdr = await service.wrapFeeBump(innerXdr);
+    const feeBump = TransactionBuilder.fromXDR(
+      feeBumpXdr,
+      Networks.STANDALONE,
+    ) as FeeBumpTransaction;
+
+    expect(feeBump.feeSource).toBe(feePayerKeypair.publicKey());
+    expect(signer.sign).toHaveBeenCalledTimes(1);
+  });
+
+  it("drain mode: after marking an account draining, new fee-bumps use only non-draining accounts", async () => {
+    const retiring = Keypair.random();
+    const replacement = Keypair.random();
+
+    const service = new FeeSponsorService({
+      client: makeMockClient(),
+      signers: [
+        { signer: makeSigner(retiring), weight: 1 },
+        { signer: makeSigner(replacement), weight: 1 },
+      ],
+    });
+
+    // Before draining, both accounts are eligible.
+    const seen = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      const innerXdr = buildSignedInnerTxXdr(
+        Keypair.random(),
+        Keypair.random().publicKey(),
+      );
+      const feeBumpXdr = await service.wrapFeeBump(innerXdr);
+      const feeBump = TransactionBuilder.fromXDR(
+        feeBumpXdr,
+        Networks.STANDALONE,
+      ) as FeeBumpTransaction;
+      seen.add(feeBump.feeSource);
+    }
+    expect(seen.has(retiring.publicKey())).toBe(true);
+    expect(seen.has(replacement.publicKey())).toBe(true);
+
+    // Enter drain mode for the retiring account.
+    service.markDraining(retiring.publicKey());
+
+    for (let i = 0; i < 50; i++) {
+      const innerXdr = buildSignedInnerTxXdr(
+        Keypair.random(),
+        Keypair.random().publicKey(),
+      );
+      const feeBumpXdr = await service.wrapFeeBump(innerXdr);
+      const feeBump = TransactionBuilder.fromXDR(
+        feeBumpXdr,
+        Networks.STANDALONE,
+      ) as FeeBumpTransaction;
+      expect(feeBump.feeSource).toBe(replacement.publicKey());
+    }
+  });
+
+  it("drain mode: throws when every sponsor is draining", async () => {
+    const only = Keypair.random();
+    const service = new FeeSponsorService({
+      client: makeMockClient(),
+      signers: [{ signer: makeSigner(only), weight: 1 }],
+    });
+
+    service.markDraining(only.publicKey());
+
+    const innerXdr = buildSignedInnerTxXdr(
+      Keypair.random(),
+      Keypair.random().publicKey(),
+    );
+
+    await expect(service.wrapFeeBump(innerXdr)).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Concurrency: distributed sequence number reservation
 // ---------------------------------------------------------------------------
 

@@ -100,6 +100,79 @@ export interface ContractSimulationResult {
 }
 
 /**
+ * Ledger footprint (read/write sets) touched by a simulated invocation.
+ */
+export interface SimulationFootprint {
+  /** Number of ledger entries read by the invocation. */
+  readEntries: number;
+  /** Number of ledger entries written by the invocation. */
+  writeEntries: number;
+  /** Total bytes read from ledger entries. */
+  readBytes: number;
+  /** Total bytes written to ledger entries. */
+  writeBytes: number;
+}
+
+/**
+ * Compact summary of a Soroban simulation, suitable for audit records.
+ *
+ * @example
+ * ```ts
+ * const summary: SimulationSummary = {
+ *   successful: true,
+ *   minResourceFee: "12345",
+ *   cpuInstructions: 1_000_000,
+ *   memoryBytes: 262_144,
+ *   footprint: { readEntries: 2, writeEntries: 1, readBytes: 512, writeBytes: 256 },
+ * };
+ * ```
+ */
+export interface SimulationSummary {
+  /** Whether the simulated invocation succeeded. */
+  successful: boolean;
+  /** Error message when `successful` is `false`. */
+  error?: string;
+  /** Minimum resource fee (in stroops) required to submit the transaction. */
+  minResourceFee?: string;
+  /** CPU instructions consumed by the invocation. */
+  cpuInstructions?: number;
+  /** Memory bytes consumed by the invocation. */
+  memoryBytes?: number;
+  /** Ledger footprint touched by the invocation. */
+  footprint?: SimulationFootprint;
+}
+
+/**
+ * Configurable resource limits enforced when cosigning Soroban invocations.
+ * Any limit left undefined is not enforced.
+ *
+ * @example
+ * ```ts
+ * const limits: SorobanResourceLimits = {
+ *   maxResourceFeeStroops: 1_000_000n,
+ *   maxCpuInstructions: 100_000_000,
+ *   maxMemoryBytes: 40 * 1024 * 1024,
+ * };
+ * ```
+ */
+export interface SorobanResourceLimits {
+  /** Maximum acceptable resource fee in stroops. */
+  maxResourceFeeStroops?: bigint;
+  /** Maximum acceptable CPU instructions. */
+  maxCpuInstructions?: number;
+  /** Maximum acceptable memory bytes. */
+  maxMemoryBytes?: number;
+  /** Maximum acceptable ledger entries read. */
+  maxReadEntries?: number;
+  /** Maximum acceptable ledger entries written. */
+  maxWriteEntries?: number;
+  /** Maximum acceptable bytes read from ledger entries. */
+  maxReadBytes?: number;
+  /** Maximum acceptable bytes written to ledger entries. */
+  maxWriteBytes?: number;
+}
+
+/**
  * Lifecycle states of a multi-token escrow (see `contracts/escrow/`).
  */
 export type EscrowState =

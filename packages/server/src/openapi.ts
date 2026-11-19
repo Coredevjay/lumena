@@ -230,6 +230,33 @@ export const openApiSpec = {
           "400": { description: "Invalid request validation error" },
           "401": { description: "Missing or invalid tenant API key" },
           "403": { description: "Transaction denied by policy rules" },
+          "422": {
+            description:
+              "Soroban simulation failed or the simulated resource fee exceeds the configured policy. " +
+              "The transaction is not co-signed. The response includes the simulation summary and a machine-readable reason.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    error: { type: "string", example: "Soroban simulation failed" },
+                    code: {
+                      type: "string",
+                      enum: ["SIMULATION_FAILED", "RESOURCE_FEE_EXCEEDED"],
+                      example: "SIMULATION_FAILED",
+                    },
+                    reason: {
+                      type: "string",
+                      description: "Human-readable explanation of the simulation failure.",
+                      example: "HostError: Error(Contract, #1)",
+                    },
+                    simulation: { $ref: "#/components/schemas/SimulationSummary" },
+                  },
+                  required: ["error", "code", "reason"],
+                },
+              },
+            },
+          },
           "429": { $ref: "#/components/responses/QuotaExceeded" },
         },
       },

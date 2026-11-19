@@ -130,6 +130,15 @@ export const errorHandler = (
     });
   }
 
+  if (err instanceof SimulationError) {
+    return res.status(err.statusCode).json({
+      error: err.message,
+      reason: err.reason,
+      ...(err.code ? { code: err.code } : {}),
+      ...(err.details !== undefined ? { details: err.details } : {}),
+    });
+  }
+
   if (err instanceof StellarError) {
     return res.status(err.statusCode).json({
       error: err.message,

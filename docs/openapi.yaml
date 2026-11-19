@@ -115,6 +115,28 @@ paths:
           description: Invalid request validation error
         '403':
           description: Transaction denied by policy rules
+        '422':
+          description: >
+            Soroban simulation failed or exceeded the configured resource policy.
+            The transaction is not co-signed. The response body includes the
+            failure reason and, when available, the simulation summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: simulation_failed
+                  reason:
+                    type: string
+                    description: Human-readable reason the simulation was rejected.
+                    example: Resource fee 0.05 XLM exceeds policy limit 0.01 XLM
+                  simulation:
+                    $ref: '#/components/schemas/SimulationSummary'
+                required:
+                  - error
+                  - reason
   /fee-bump:
     post:
       summary: Wrap Fee-Bump Transaction
@@ -965,6 +987,72 @@ components:
       in: header
       name: x-api-key
   schemas:
+    SimulationSummary:
+      type: object
+      description: Summary of a Soroban simulateTransaction result, recorded in the audit log.
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          nullable: true
+          description: Simulation error message, if any.
+        resourceFee:
+          type: string
+          description: Total resource fee in stroops.
+          example: "500000"
+        minResourceFee:
+          type: string
+          description: Minimum resource fee reported by the simulation.
+          example: "480000"
+        instructions:
+          type: integer
+          description: CPU instructions consumed.
+          example: 1250000
+        readBytes:
+          type: integer
+          description: Ledger entry bytes read.
+          example: 4096
+        writeBytes:
+          type: integer
+          description: Ledger entry bytes written.
+          example: 1024
+        footprint:
+          type: object
+          description: Ledger footprint (read-only and read-write keys) from the simulation.
+      required:
+        - success
+        - resourceFee
+    AuditManifest:
+      type: object
+      description: Manifest accompanying an audit export, verifiable offline against the Merkle root.
+      properties:
+        merkleRoot:
+          type: string
+          description: Merkle root over the exported audit entries.
+          example: 9f2c...
+        entryCount:
+          type: integer
+          example: 1024
+        from:
+          type: string
+          format: date-time
+          nullable: true
+        to:
+          type: string
+          format: date-time
+          nullable: true
+        wallet:
+          type: string
+          nullable: true
+        generatedAt:
+          type: string
+          format: date-time
+      required:
+        - merkleRoot
+        - entryCount
+        - generatedAt
     WalletAnalytics:
       type: object
       properties:
@@ -1239,3 +1327,26 @@ components:
       description: "API key passed in the Authorization: Bearer <api-key> header"
 security:
   - bearerAuth: []
+x-idempotency:
+  description: >
+    Requests may include an `Idempotency-Key` header. Keys are stored for
+    `IDEMPOTENCY_TTL_SECONDS` (default 86400) in the backend selected by
+    `IDEMPOTENCY_STORE` (`memory` or `redis`). Replaying a key with the same
+    request returns the original response; replaying a key with a different
+    request body returns `409 Conflict`. Expired keys are treated as new.
+  header: Idempotency-Key
+  config:
+    IDEMPOTENCY_TTL_SECONDS:
+      type: integer
+      default: 86400
+      description: Time-to-live for stored idempotency keys, in seconds.
+    IDEMPOTENCY_STORE:
+      type: string
+      enum: [memory, redis]
+      default: memory
+      description: Storage backend for idempotency keys.
+  conflict:
+    status: 409
+    description: >
+      An idempotency key was reused with a different request payload, or the
+      original request is still in flight.

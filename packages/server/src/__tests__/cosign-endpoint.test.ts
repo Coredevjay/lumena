@@ -7,6 +7,9 @@ import {
   Asset,
   BASE_FEE,
   Networks,
+  Contract,
+  nativeToScVal,
+  xdr,
 } from "@stellar/stellar-sdk";
 import type { AddressInfo } from "node:net";
 import { createServer, type ServerResult } from "../server.js";
@@ -297,6 +300,65 @@ describe("POST /cosign Security & Validation Endpoints", () => {
 
     expect(data.results[2].success).toBe(true);
     expect(data.results[2].signedXdr).toBeDefined();
+  });
+
+  function buildSignedSorobanInvocation(
+    userKeypair: Keypair,
+    contractId: string
+  ): string {
+    const userAccount = new Account(userKeypair.publicKey(), "100");
+    const contract = new Contract(contractId);
+    const tx = new TransactionBuilder(userAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: Networks.STANDALONE,
+    })
+      .addOperation(
+        contract.call("transfer", nativeToScVal(1, { type: "i128" }))
+      )
+      .setTimeout(180)
+      .build();
+    tx.sign(userKeypair);
+    return tx.toXDR();
+  }
+
+  const testContractId = Keypair.random().publicKey();
+
+  it("returns 422 with reason when Soroban simulation fails", async () => {
+    const userKeypair = Keypair.random();
+
+    const res = await fetch(`${baseUrl}/cosign`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        xdr: buildSignedSorobanInvocation(userKeypair, testContractId),
+        walletAddress: userKeypair.publicKey(),
+      }),
+    });
+
+    expect(res.status).toBe(422);
+    const data = await res.json();
+    expect(typeof data.error).toBe("string");
+    expect(data.error.length).toBeGreaterThan(0);
+    expect(data.reason).toBeDefined();
+  });
+
+  it("returns 422 with reason when simulation resource fee exceeds policy", async () => {
+    const userKeypair = Keypair.random();
+
+    const res = await fetch(`${baseUrl}/cosign`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        xdr: buildSignedSorobanInvocation(userKeypair, testContractId),
+        walletAddress: userKeypair.publicKey(),
+      }),
+    });
+
+    expect(res.status).toBe(422);
+    const data = await res.json();
+    expect(typeof data.error).toBe("string");
+    expect(data.error.length).toBeGreaterThan(0);
+    expect(data.reason).toBeDefined();
   });
 
   it("rejects a high-velocity anomaly with FRAUD_VELOCITY_TRIGGERED", async () => {

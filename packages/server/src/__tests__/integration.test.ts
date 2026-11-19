@@ -290,6 +290,85 @@ describe("Idempotency middleware", () => {
 
     expect(handler).toHaveBeenCalledTimes(2);
   });
+
+  it("reprocesses a key once its TTL has elapsed (memory backend)", async () => {
+    const store = new IdempotencyStore({ ttlSeconds: 1, store: "memory" });
+    const handler = vi.fn(async () => ({ status: 200, body: { hash: "expiring" } }));
+
+    const first = await withIdempotency(store, "key-expiry", handler);
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    // Simulate the TTL elapsing.
+    const now = Date.now();
+    const spy = vi.spyOn(Date, "now").mockReturnValue(now + 2_000);
+    try {
+      const second = await withIdempotency(store, "key-expiry", handler);
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(second).toEqual(first);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("rejects a mismatched payload for an in-flight key (conflict)", async () => {
+    const store = createStore();
+    const handler = vi.fn(async () => ({ status: 200, body: { hash: "conflict" } }));
+
+    await withIdempotency(store, "key-conflict", handler, { payload: { amount: "1" } });
+
+    await expect(
+      withIdempotency(store, "key-conflict", handler, { payload: { amount: "2" } })
+    ).rejects.toThrow(/idempotency/i);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Idempotency middleware (Redis backend)", () => {
+  function createStore() {
+    return new IdempotencyStore({ ttlSeconds: 60, store: "redis" });
+  }
+
+  it("returns the identical cached response on repeated requests", async () => {
+    const store = createStore();
+    const handler = vi.fn(async () => ({ status: 200, body: { hash: "redis-abc" } }));
+
+    const first = await withIdempotency(store, "redis-key-1", handler);
+    const second = await withIdempotency(store, "redis-key-1", handler);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(second).toEqual(first);
+  });
+
+  it("reprocesses a key once its TTL has elapsed (redis backend)", async () => {
+    const store = new IdempotencyStore({ ttlSeconds: 1, store: "redis" });
+    const handler = vi.fn(async () => ({ status: 200, body: { hash: "redis-expiring" } }));
+
+    await withIdempotency(store, "redis-key-expiry", handler);
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    const now = Date.now();
+    const spy = vi.spyOn(Date, "now").mockReturnValue(now + 2_000);
+    try {
+      await withIdempotency(store, "redis-key-expiry", handler);
+      expect(handler).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("rejects a mismatched payload for an in-flight key (conflict)", async () => {
+    const store = createStore();
+    const handler = vi.fn(async () => ({ status: 200, body: { hash: "redis-conflict" } }));
+
+    await withIdempotency(store, "redis-key-conflict", handler, { payload: { amount: "1" } });
+
+    await expect(
+      withIdempotency(store, "redis-key-conflict", handler, { payload: { amount: "2" } })
+    ).rejects.toThrow(/idempotency/i);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("Graceful shutdown lifecycle", () => {

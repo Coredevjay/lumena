@@ -493,6 +493,173 @@ describe("CosignerService Distributed Sequence Allocation & Backoff", () => {
   });
 });
 
+describe("CosignerService Soroban Simulation", () => {
+  const cosignerKeypair = Keypair.random();
+  const signer = new EnvSigner(cosignerKeypair.secret());
+  const client = new StellarClient({ network: "local" });
+  const userKeypair = Keypair.random();
+  const dummyAccount = new Account(userKeypair.publicKey(), "100");
+
+  const buildSignedTx = () => {
+    const tx = new TransactionBuilder(dummyAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: Networks.STANDALONE,
+    })
+      .addOperation(
+        Operation.payment({
+          destination: Keypair.random().publicKey(),
+          asset: Asset.native(),
+          amount: "10",
+        })
+      )
+      .setTimeout(180)
+      .build();
+    tx.sign(userKeypair);
+    return tx;
+  };
+
+  const createSimulator = (result: unknown) => ({
+    simulate: async () => result,
+  });
+
+  it("rejects with a 422-mapped reason when simulation fails", async () => {
+    const policyEngine = new PolicyEngine();
+    const simulator = createSimulator({
+      success: false,
+      error: "HostError: contract invocation failed",
+    });
+    const cosigner = new CosignerService({
+      client,
+      signer,
+      policyEngine,
+      simulator: simulator as never,
+    });
+
+    const result = await cosigner.cosign({
+      xdr: buildSignedTx().toXDR(),
+      walletAddress: userKeypair.publicKey(),
+    });
+
+    expect(result.approved).toBe(false);
+    expect(result.statusCode).toBe(422);
+    expect(result.reason).toContain("Simulation failed");
+    expect(result.reason).toContain("contract invocation failed");
+  });
+
+  it("rejects when the simulated resource fee exceeds policy", async () => {
+    const policyEngine = new PolicyEngine();
+    const simulator = createSimulator({
+      success: true,
+      minResourceFee: "5000000",
+      cost: { cpuInsns: "1000", memBytes: "1000" },
+    });
+    const cosigner = new CosignerService({
+      client,
+      signer,
+      policyEngine,
+      simulator: simulator as never,
+      maxResourceFeeStroops: 1000,
+    });
+
+    const result = await cosigner.cosign({
+      xdr: buildSignedTx().toXDR(),
+      walletAddress: userKeypair.publicKey(),
+    });
+
+    expect(result.approved).toBe(false);
+    expect(result.statusCode).toBe(422);
+    expect(result.reason).toContain("resource fee");
+  });
+
+  it("rejects when simulated cpu instructions exceed the configured limit", async () => {
+    const policyEngine = new PolicyEngine();
+    const simulator = createSimulator({
+      success: true,
+      minResourceFee: "100",
+      cost: { cpuInsns: "999999999", memBytes: "1000" },
+    });
+    const cosigner = new CosignerService({
+      client,
+      signer,
+      policyEngine,
+      simulator: simulator as never,
+      maxCpuInsns: 1000000,
+    });
+
+    const result = await cosigner.cosign({
+      xdr: buildSignedTx().toXDR(),
+      walletAddress: userKeypair.publicKey(),
+    });
+
+    expect(result.approved).toBe(false);
+    expect(result.statusCode).toBe(422);
+    expect(result.reason).toContain("cpu");
+  });
+
+  it("rejects when simulated memory bytes exceed the configured limit", async () => {
+    const policyEngine = new PolicyEngine();
+    const simulator = createSimulator({
+      success: true,
+      minResourceFee: "100",
+      cost: { cpuInsns: "1000", memBytes: "999999999" },
+    });
+    const cosigner = new CosignerService({
+      client,
+      signer,
+      policyEngine,
+      simulator: simulator as never,
+      maxMemBytes: 1000000,
+    });
+
+    const result = await cosigner.cosign({
+      xdr: buildSignedTx().toXDR(),
+      walletAddress: userKeypair.publicKey(),
+    });
+
+    expect(result.approved).toBe(false);
+    expect(result.statusCode).toBe(422);
+    expect(result.reason).toContain("memory");
+  });
+
+  it("records the simulation summary in the audit entry on success", async () => {
+    const policyEngine = new PolicyEngine();
+    const simulator = createSimulator({
+      success: true,
+      minResourceFee: "100",
+      cost: { cpuInsns: "1000", memBytes: "2000" },
+    });
+    const auditEntries: Array<Record<string, unknown>> = [];
+    const auditLogger = {
+      record: async (entry: Record<string, unknown>) => {
+        auditEntries.push(entry);
+      },
+    };
+    const cosigner = new CosignerService({
+      client,
+      signer,
+      policyEngine,
+      simulator: simulator as never,
+      auditLogger: auditLogger as never,
+    });
+
+    const result = await cosigner.cosign({
+      xdr: buildSignedTx().toXDR(),
+      walletAddress: userKeypair.publicKey(),
+    });
+
+    expect(result.approved).toBe(true);
+    expect(result.signedXdr).toBeTruthy();
+    expect(auditEntries).toHaveLength(1);
+    const entry = auditEntries[0];
+    expect(entry.simulation).toBeTruthy();
+    expect((entry.simulation as Record<string, unknown>).minResourceFee).toBe("100");
+    expect((entry.simulation as Record<string, unknown>).cost).toEqual({
+      cpuInsns: "1000",
+      memBytes: "2000",
+    });
+  });
+});
+
 describe("CosignerService Batch Cosigning", () => {
   const cosignerKeypair = Keypair.random();
   const signer = new EnvSigner(cosignerKeypair.secret());

@@ -96,6 +96,45 @@ export interface AuditLogStorage {
   append(record: AuditRecord): Promise<boolean>;
 }
 
+function parseSimulationSummary(value: unknown): SimulationSummary {
+  if (!value || typeof value !== "object") {
+    throw new Error("Stored audit record has an invalid simulation summary");
+  }
+  const summary = value as Record<string, unknown>;
+  if (
+    typeof summary.successful !== "boolean" ||
+    typeof summary.minResourceFee !== "string" ||
+    typeof summary.cpuInstructions !== "string" ||
+    typeof summary.memoryBytes !== "string" ||
+    !Array.isArray(summary.footprint) ||
+    !summary.footprint.every(
+      (entry) =>
+        entry &&
+        typeof entry === "object" &&
+        typeof (entry as Record<string, unknown>).type === "string" &&
+        typeof (entry as Record<string, unknown>).value === "string",
+    ) ||
+    (summary.error !== undefined && typeof summary.error !== "string")
+  ) {
+    throw new Error("Stored audit record has an invalid simulation summary");
+  }
+  return Object.freeze({
+    successful: summary.successful,
+    minResourceFee: summary.minResourceFee,
+    cpuInstructions: summary.cpuInstructions,
+    memoryBytes: summary.memoryBytes,
+    footprint: Object.freeze(
+      summary.footprint.map((entry) =>
+        Object.freeze({
+          type: (entry as SimulationFootprintEntry).type,
+          value: (entry as SimulationFootprintEntry).value,
+        }),
+      ),
+    ),
+    ...(summary.error !== undefined ? { error: summary.error } : {}),
+  });
+}
+
 export function parseAuditRecord(raw: string): AuditRecord {
   const value: unknown = JSON.parse(raw);
   if (!value || typeof value !== "object") {
@@ -134,6 +173,9 @@ export function parseAuditRecord(raw: string): AuditRecord {
     walletAddress: record.walletAddress,
     decision: record.decision,
     rulesEvaluated: Object.freeze([...record.rulesEvaluated]),
+    ...(record.simulation !== undefined
+      ? { simulation: parseSimulationSummary(record.simulation) }
+      : {}),
     hash: record.hash,
   };
   if (record.explainTrace !== undefined) {

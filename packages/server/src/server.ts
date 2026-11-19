@@ -79,6 +79,7 @@ import { WebhookDispatcher } from "./webhook/dispatcher.js";
 import { createGraphQLGateway } from "./graphql/index.js";
 import { createWalletWebSocketServer } from "./websocket/index.js";
 import { MerkleAuditLog, parseAuditRecord } from "./audit/merkle-log.js";
+import { createAuditExportHandler } from "./audit/export.js";
 
 /** A single policy decision broadcast on the audit stream. */
 export interface AuditEvent {
@@ -884,6 +885,18 @@ return 1
     });
     next();
   });
+
+  // #505 — streaming audit log export (JSONL/CSV) with a signed manifest.
+  app.get(
+    "/audit/export",
+    rbac.requirePermission("audit:read"),
+    wrapHandler(
+      createAuditExportHandler({
+        auditLog,
+        signer: opts.cosignerSigner,
+      }),
+    ),
+  );
 
   app.get(
     "/sponsor/status",

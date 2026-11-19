@@ -17,6 +17,20 @@ import { sc } from "./scval-builders.js";
 import { withRetry, type RetryOptions } from "../../utils/retry.js";
 
 /**
+ * Error thrown when a Soroban simulation fails or exceeds configured resource
+ * limits. Carries the simulation summary for inclusion in audit records.
+ */
+export class SorobanSimulationError extends Error {
+  readonly summary: SorobanSimulationSummary;
+
+  constructor(message: string, summary: SorobanSimulationSummary) {
+    super(message);
+    this.name = "SorobanSimulationError";
+    this.summary = summary;
+  }
+}
+
+/**
  * Arguments for the spend-policy contract's `spend` method.
  */
 export interface SpendPolicySpendArgs {
@@ -48,11 +62,166 @@ export interface TtlManagerExtendArgs {
   extendBy: number;
 }
 
+/**
+ * Configurable resource limits applied to Soroban simulations before cosigning.
+ */
+export interface SorobanResourceLimits {
+  /** Maximum allowed resource fee (in stroops) for a simulated transaction. */
+  maxResourceFee?: bigint | number | string;
+  /** Maximum allowed CPU instructions for a simulated transaction. */
+  maxCpuInstructions?: number;
+  /** Maximum allowed memory bytes for a simulated transaction. */
+  maxMemoryBytes?: number;
+}
+
+/**
+ * Summary of a Soroban simulation, including footprint size and resource usage.
+ */
+export interface SorobanSimulationSummary {
+  successful: boolean;
+  returnValue?: unknown;
+  minResourceFee?: string;
+  cpuInstructions?: number;
+  memoryBytes?: number;
+  /** Number of ledger entries in the read-only footprint. */
+  readOnlyFootprintSize?: number;
+  /** Number of ledger entries in the read-write footprint. */
+  readWriteFootprintSize?: number;
+  /** Total number of ledger entries in the footprint. */
+  footprintSize?: number;
+  error?: string;
+}
+
 export class ContractClient {
   readonly client: StellarClient;
 
   constructor(client: StellarClient) {
     this.client = client;
+  }
+
+  /**
+   * Pre-flight simulation helper used by the cosigner. Accepts either a built
+   * `Transaction` or a base64-encoded transaction envelope XDR and returns a
+   * normalized simulation summary (including footprint size and error).
+   */
+  async simulateTransaction(
+    txOrXdr: Transaction | string
+  ): Promise<SorobanSimulationSummary> {
+    const tx =
+      typeof txOrXdr === "string"
+        ? TransactionBuilder.fromXDR(
+            txOrXdr,
+            this.client.networkPassphrase
+          ) as Transaction
+        : txOrXdr;
+
+    const simResponse = await this.client.rpc.simulateTransaction(tx);
+    const sim = simResponse as any;
+    const isSuccess =
+      rpc.Api.isSimulationSuccess(simResponse) ||
+      (sim && sim.result?.retval !== undefined);
+
+    const footprint = sim?.transactionData?.resources?.footprint;
+    const readOnly = footprint?.readOnly ?? [];
+    const readWrite = footprint?.readWrite ?? [];
+    const readOnlyFootprintSize = Array.isArray(readOnly)
+      ? readOnly.length
+      : undefined;
+    const readWriteFootprintSize = Array.isArray(readWrite)
+      ? readWrite.length
+      : undefined;
+    const footprintSize =
+      readOnlyFootprintSize !== undefined && readWriteFootprintSize !== undefined
+        ? readOnlyFootprintSize + readWriteFootprintSize
+        : undefined;
+
+    if (isSuccess) {
+      const retval = sim.result?.retval;
+      return {
+        successful: true,
+        returnValue: retval ? fromScVal(retval) : undefined,
+        minResourceFee: sim.minResourceFee?.toString(),
+        cpuInstructions: sim.cost?.cpuInsns
+          ? Number(sim.cost.cpuInsns)
+          : undefined,
+        memoryBytes: sim.cost?.memBytes ? Number(sim.cost.memBytes) : undefined,
+        readOnlyFootprintSize,
+        readWriteFootprintSize,
+        footprintSize,
+      };
+    }
+
+    return {
+      successful: false,
+      minResourceFee: sim.minResourceFee?.toString(),
+      readOnlyFootprintSize,
+      readWriteFootprintSize,
+      footprintSize,
+      error: sim?.error ?? sim?.result?.error ?? "Simulation failed",
+    };
+  }
+
+  /**
+   * Simulates an invocation and enforces configurable resource limits. Throws a
+   * `SorobanSimulationError` when the simulation fails or exceeds policy.
+   */
+  async simulateWithLimits(
+    invocation: ContractInvocation,
+    limits: SorobanResourceLimits = {},
+    sourceAddress?: string
+  ): Promise<SorobanSimulationSummary> {
+    const summary = await this.simulate(invocation, sourceAddress);
+    this.enforceResourceLimits(summary, limits);
+    return summary;
+  }
+
+  /**
+   * Validates a simulation summary against the configured resource limits.
+   */
+  enforceResourceLimits(
+    summary: SorobanSimulationSummary,
+    limits: SorobanResourceLimits = {}
+  ): void {
+    if (!summary.successful) {
+      throw new SorobanSimulationError(
+        summary.error ?? "Simulation failed",
+        summary
+      );
+    }
+
+    if (limits.maxResourceFee !== undefined && summary.minResourceFee !== undefined) {
+      const fee = BigInt(summary.minResourceFee);
+      if (fee > BigInt(limits.maxResourceFee)) {
+        throw new SorobanSimulationError(
+          `Resource fee ${fee.toString()} exceeds limit ${BigInt(
+            limits.maxResourceFee
+          ).toString()}`,
+          summary
+        );
+      }
+    }
+
+    if (
+      limits.maxCpuInstructions !== undefined &&
+      summary.cpuInstructions !== undefined &&
+      summary.cpuInstructions > limits.maxCpuInstructions
+    ) {
+      throw new SorobanSimulationError(
+        `CPU instructions ${summary.cpuInstructions} exceed limit ${limits.maxCpuInstructions}`,
+        summary
+      );
+    }
+
+    if (
+      limits.maxMemoryBytes !== undefined &&
+      summary.memoryBytes !== undefined &&
+      summary.memoryBytes > limits.maxMemoryBytes
+    ) {
+      throw new SorobanSimulationError(
+        `Memory bytes ${summary.memoryBytes} exceed limit ${limits.maxMemoryBytes}`,
+        summary
+      );
+    }
   }
 
   /**
@@ -98,20 +267,19 @@ export class ContractClient {
     const isSuccess =
       rpc.Api.isSimulationSuccess(simResponse) || (sim && sim.result?.retval !== undefined);
 
-    if (isSuccess) {
-      const retval = sim.result?.retval;
+    if (summary.successful) {
       return {
         successful: true,
-        returnValue: retval ? fromScVal(retval) : undefined,
-        minResourceFee: sim.minResourceFee?.toString(),
-        cpuInstructions: sim.cost?.cpuInsns ? Number(sim.cost.cpuInsns) : undefined,
-        memoryBytes: sim.cost?.memBytes ? Number(sim.cost.memBytes) : undefined,
+        returnValue: summary.returnValue,
+        minResourceFee: summary.minResourceFee,
+        cpuInstructions: summary.cpuInstructions,
+        memoryBytes: summary.memoryBytes,
       };
     }
 
     return {
       successful: false,
-      error: sim?.error ?? sim?.result?.error ?? "Simulation failed",
+      error: summary.error ?? "Simulation failed",
     };
   }
 

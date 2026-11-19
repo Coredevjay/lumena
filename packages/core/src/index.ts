@@ -14,6 +14,12 @@ export {
   type BuildFeeBumpOpts,
   type BuildTransactionOpts,
 } from "./stellar/transaction.js";
+export {
+  parseResultCodes,
+  StellarResultError,
+  RESULT_CODE_MESSAGES,
+  type ParsedResultCode,
+} from "./stellar/result-codes.js";
 export { pathPayment, pathPaymentStrictReceive, findPaths } from "./stellar/path-payment.js";
 export {
   KNOWN_ASSETS,
@@ -64,7 +70,7 @@ export {
   type HdDerivedAccount,
   type HdWalletOpts,
 } from "./keys/hd-wallet.js";
-export { Wallet } from "./wallet/wallet.js";
+export { Wallet, type SendOpts } from "./wallet/wallet.js";
 export { Sep41Token } from "./stellar/sep41.js";
 export {
   buildTimeBounds,

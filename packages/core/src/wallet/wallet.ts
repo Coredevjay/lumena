@@ -5,6 +5,7 @@ import { createSponsoredAccount } from "../stellar/account.js";
 import { setupMultisig } from "../stellar/multisig.js";
 import { KeyManager } from "../keys/manager.js";
 import { ContractClient } from "../soroban/client.js";
+import { parseResultCodes, StellarResultError } from "../stellar/result-codes.js";
 import type { ContractSimulationResult, OperationSpec, ScValInput } from "@lumen/types";
 
 export interface WalletOpts {
@@ -44,6 +45,15 @@ export interface CrossContractValidationResult {
   allowed: boolean;
   /** The call targets that were rejected (empty when `allowed` is true). */
   rejectedTargets: string[];
+}
+
+/** Options for `Wallet.send`. */
+export interface SendOpts {
+  /**
+   * Skip the SEP-0029 memo-required check. Only set this when you are certain
+   * the destination does not need a memo.
+   */
+  skipMemoRequiredCheck?: boolean;
 }
 
 /** Result of a USD spend-limit check performed via the oracle consumer contract. */
@@ -181,10 +191,19 @@ export class Wallet {
     asset: Asset,
     amount: string,
     memo?: Memo | string,
+    opts: SendOpts = {},
   ): Promise<{ hash: string }> {
     if (!this._keypair) throw new Error("Wallet not initialized");
     if (!this.serverUrl) {
       throw new Error("A Lumen server URL is required to send payments through policy enforcement");
+    }
+
+    const hasMemo = memo !== undefined && !(typeof memo !== "string" && memo.type === "none");
+    if (!hasMemo && !opts.skipMemoRequiredCheck && (await this.checkMemoRequired(destination))) {
+      throw new Error(
+        `Destination ${destination} requires a memo (SEP-0029). ` +
+          "Provide a memo or pass { skipMemoRequiredCheck: true } to override.",
+      );
     }
 
     const signedXdr = await this.buildPaymentTransaction(destination, asset, amount, memo);
@@ -218,6 +237,8 @@ export class Wallet {
     });
     if (!submitResponse.ok) {
       const details = await submitResponse.text();
+      const resultError = this.toStellarResultError(details);
+      if (resultError) throw resultError;
       throw new Error(
         `Fee-bump submission failed with status ${submitResponse.status}${details ? `: ${details}` : ""}`,
       );
@@ -236,6 +257,26 @@ export class Wallet {
 
     this.recordTransaction(asset, amount);
     return { hash: submitResult.hash };
+  }
+
+  /**
+   * Checks whether the destination account has opted in to SEP-0029 by setting
+   * the `config.memo_required` data entry to `1`. Muxed (M...) destinations and
+   * accounts that do not exist yet never require a memo.
+   */
+  async checkMemoRequired(destination: string): Promise<boolean> {
+    if (destination.startsWith("M")) return false;
+
+    let account: { data_attr?: Record<string, string> };
+    try {
+      account = await this.client.horizon.loadAccount(destination);
+    } catch (error) {
+      if ((error as any)?.response?.status === 404) return false;
+      throw error;
+    }
+
+    // Horizon returns data entry values base64-encoded; "MQ==" is "1".
+    return account.data_attr?.["config.memo_required"] === "MQ==";
   }
 
   async buildPaymentTransaction(
@@ -529,6 +570,35 @@ export class Wallet {
       throw new Error("Unable to read inheritance status from contract");
     }
     return parsed;
+  }
+
+  /**
+   * Converts a fee-bump error response body into a typed `StellarResultError`
+   * when it carries a result code, either as the server error envelope
+   * (`{ error, code, operationIndex, hint }`) or as raw Horizon result codes.
+   */
+  private toStellarResultError(details: string): StellarResultError | null {
+    let body: unknown;
+    try {
+      body = JSON.parse(details);
+    } catch {
+      return null;
+    }
+    if (typeof body !== "object" || body === null) return null;
+
+    const envelope = body as Record<string, unknown>;
+    if (typeof envelope.code === "string" && typeof envelope.hint === "string") {
+      return new StellarResultError({
+        code: envelope.code,
+        operationIndex:
+          typeof envelope.operationIndex === "number" ? envelope.operationIndex : null,
+        message: typeof envelope.error === "string" ? envelope.error : envelope.code,
+        hint: envelope.hint,
+      });
+    }
+
+    const parsed = parseResultCodes(body);
+    return parsed ? new StellarResultError(parsed) : null;
   }
 
   private isTruthySimulationResult(simulation: ContractSimulationResult): boolean {

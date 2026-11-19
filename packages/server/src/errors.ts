@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
+import { parseResultCodes } from "@lumen/core";
 import { logger } from "./logger.js";
 
 export class ValidationError extends Error {
@@ -110,6 +111,16 @@ export const errorHandler = (
   if (err instanceof StellarError) {
     return res.status(err.statusCode).json({
       error: err.message,
+    });
+  }
+
+  const resultCode = parseResultCodes(err);
+  if (resultCode) {
+    return res.status(400).json({
+      error: resultCode.message,
+      code: resultCode.code,
+      operationIndex: resultCode.operationIndex,
+      hint: resultCode.hint,
     });
   }
 

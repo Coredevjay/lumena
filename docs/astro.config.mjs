@@ -54,6 +54,7 @@ export default defineConfig({
             { label: 'Contributing', slug: 'contributing' },
             { label: 'CI', slug: 'ci' },
             { label: 'Security', slug: 'security' },
+            { label: 'Troubleshooting', slug: 'troubleshooting' },
           ],
         },
         {
@@ -75,6 +76,7 @@ export default defineConfig({
           items: [
             { label: 'Policy Configuration', slug: 'policy-configuration' },
             { label: 'Production Key Management', slug: 'production-key-management' },
+            { label: 'Webhooks', slug: 'webhooks' },
           ],
         },
         {

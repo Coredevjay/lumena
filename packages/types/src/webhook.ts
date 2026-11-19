@@ -7,6 +7,55 @@ export type WebhookEventType =
   | "balance.low"
   | "*";
 
+/** Payload `data` for `wallet.created`. */
+export interface WalletCreatedEventData {
+  address: string;
+  publicKey: string;
+}
+
+/** Payload `data` for `transaction.cosigned`. */
+export interface TransactionCosignedEventData {
+  walletAddress: string;
+  txHash: string;
+}
+
+/** Payload `data` for `transaction.sponsored`. */
+export interface TransactionSponsoredEventData {
+  feeSource: string;
+  hash: string;
+}
+
+/** Payload `data` for `transaction.fee_bump.submitted`. */
+export interface TransactionFeeBumpSubmittedEventData {
+  feeSource: string;
+  hash: string;
+  feeBumpHash: string;
+}
+
+/** Payload `data` for `policy.violated`. */
+export interface PolicyViolatedEventData {
+  walletAddress: string;
+  reason?: string;
+  txHash: string;
+}
+
+/** Payload `data` for `balance.low`. */
+export interface BalanceLowEventData {
+  sponsorPublicKey: string;
+  balance: number;
+  threshold: number;
+}
+
+/** Maps each concrete webhook event type to the shape of its payload `data`. */
+export interface WebhookEventDataMap {
+  "wallet.created": WalletCreatedEventData;
+  "transaction.cosigned": TransactionCosignedEventData;
+  "transaction.sponsored": TransactionSponsoredEventData;
+  "transaction.fee_bump.submitted": TransactionFeeBumpSubmittedEventData;
+  "policy.violated": PolicyViolatedEventData;
+  "balance.low": BalanceLowEventData;
+}
+
 export interface WebhookConfig {
   id: string;
   url: string;

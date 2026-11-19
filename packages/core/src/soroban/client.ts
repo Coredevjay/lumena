@@ -14,6 +14,7 @@ import type {
 import type { StellarClient } from "../stellar/client.js";
 import { fromScVal } from "./scval.js";
 import { sc } from "./scval-builders.js";
+import { withRetry, type RetryOptions } from "../../utils/retry.js";
 
 /**
  * Arguments for the spend-policy contract's `spend` method.
@@ -74,7 +75,8 @@ export class ContractClient {
    */
   async simulate(
     invocation: ContractInvocation,
-    sourceAddress?: string
+    sourceAddress?: string,
+    options?: RetryOptions
   ): Promise<ContractSimulationResult> {
     const source = sourceAddress ?? "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
     const dummyAccount = new Account(source, "0");
@@ -88,7 +90,10 @@ export class ContractClient {
       .setTimeout(180)
       .build();
 
-    const simResponse = await this.client.rpc.simulateTransaction(tx);
+    const simResponse = await withRetry(
+      () => this.client.rpc.simulateTransaction(tx),
+      options
+    );
     const sim = simResponse as any;
     const isSuccess =
       rpc.Api.isSimulationSuccess(simResponse) || (sim && sim.result?.retval !== undefined);
@@ -118,8 +123,12 @@ export class ContractClient {
     invocation: ContractInvocation;
     fee?: string;
     timeoutSeconds?: number;
+    retry?: RetryOptions;
   }): Promise<Transaction> {
-    const account = await this.client.horizon.loadAccount(opts.sourceAddress);
+    const account = await withRetry(
+      () => this.client.horizon.loadAccount(opts.sourceAddress),
+      opts.retry
+    );
     const op = this.buildInvocationOperation(opts.invocation);
 
     const tx = new TransactionBuilder(account, {
@@ -130,7 +139,10 @@ export class ContractClient {
       .setTimeout(opts.timeoutSeconds ?? 180)
       .build();
 
-    return (await this.client.rpc.prepareTransaction(tx)) as Transaction;
+    return (await withRetry(
+      () => this.client.rpc.prepareTransaction(tx),
+      opts.retry
+    )) as Transaction;
   }
 
   /**
@@ -202,11 +214,13 @@ export class ContractClient {
   async simulateSpendPolicySpend(
     contractId: string,
     args: SpendPolicySpendArgs,
-    sourceAddress?: string
+    sourceAddress?: string,
+    options?: RetryOptions
   ): Promise<ContractSimulationResult> {
     return this.simulate(
       this.buildSpendPolicySpendInvocation(contractId, args),
-      sourceAddress
+      sourceAddress,
+      options
     );
   }
 
@@ -216,11 +230,13 @@ export class ContractClient {
   async simulateSpendPolicyScheduleLimitChange(
     contractId: string,
     args: SpendPolicyScheduleLimitChangeArgs,
-    sourceAddress?: string
+    sourceAddress?: string,
+    options?: RetryOptions
   ): Promise<ContractSimulationResult> {
     return this.simulate(
       this.buildSpendPolicyScheduleLimitChangeInvocation(contractId, args),
-      sourceAddress
+      sourceAddress,
+      options
     );
   }
 
@@ -230,11 +246,13 @@ export class ContractClient {
   async simulateSpendPolicyApplyPendingLimit(
     contractId: string,
     args: SpendPolicyApplyPendingLimitArgs,
-    sourceAddress?: string
+    sourceAddress?: string,
+    options?: RetryOptions
   ): Promise<ContractSimulationResult> {
     return this.simulate(
       this.buildSpendPolicyApplyPendingLimitInvocation(contractId, args),
-      sourceAddress
+      sourceAddress,
+      options
     );
   }
 
@@ -244,11 +262,13 @@ export class ContractClient {
   async simulateTtlManagerExtend(
     contractId: string,
     args: TtlManagerExtendArgs,
-    sourceAddress?: string
+    sourceAddress?: string,
+    options?: RetryOptions
   ): Promise<ContractSimulationResult> {
     return this.simulate(
       this.buildTtlManagerExtendInvocation(contractId, args),
-      sourceAddress
+      sourceAddress,
+      options
     );
   }
 
@@ -261,12 +281,14 @@ export class ContractClient {
     args: SpendPolicySpendArgs;
     fee?: string;
     timeoutSeconds?: number;
+    retry?: RetryOptions;
   }): Promise<Transaction> {
     return this.buildTransaction({
       sourceAddress: opts.sourceAddress,
       invocation: this.buildSpendPolicySpendInvocation(opts.contractId, opts.args),
       fee: opts.fee,
       timeoutSeconds: opts.timeoutSeconds,
+      retry: opts.retry,
     });
   }
 
@@ -280,6 +302,7 @@ export class ContractClient {
     args: SpendPolicyScheduleLimitChangeArgs;
     fee?: string;
     timeoutSeconds?: number;
+    retry?: RetryOptions;
   }): Promise<Transaction> {
     return this.buildTransaction({
       sourceAddress: opts.sourceAddress,
@@ -289,6 +312,7 @@ export class ContractClient {
       ),
       fee: opts.fee,
       timeoutSeconds: opts.timeoutSeconds,
+      retry: opts.retry,
     });
   }
 
@@ -302,6 +326,7 @@ export class ContractClient {
     args: SpendPolicyApplyPendingLimitArgs;
     fee?: string;
     timeoutSeconds?: number;
+    retry?: RetryOptions;
   }): Promise<Transaction> {
     return this.buildTransaction({
       sourceAddress: opts.sourceAddress,
@@ -311,6 +336,7 @@ export class ContractClient {
       ),
       fee: opts.fee,
       timeoutSeconds: opts.timeoutSeconds,
+      retry: opts.retry,
     });
   }
 
@@ -324,12 +350,14 @@ export class ContractClient {
     args: TtlManagerExtendArgs;
     fee?: string;
     timeoutSeconds?: number;
+    retry?: RetryOptions;
   }): Promise<Transaction> {
     return this.buildTransaction({
       sourceAddress: opts.sourceAddress,
       invocation: this.buildTtlManagerExtendInvocation(opts.contractId, opts.args),
       fee: opts.fee,
       timeoutSeconds: opts.timeoutSeconds,
+      retry: opts.retry,
     });
   }
 }

@@ -490,6 +490,243 @@ paths:
                 $ref: '#/components/schemas/Policy'
         '404':
           description: No policy found for wallet
+  /policy/{walletId}/evaluate:
+    post:
+      summary: Evaluate Transaction Against Policy (Dry Run)
+      description: >
+        Evaluates a base64-encoded transaction envelope XDR against the stored
+        policy for the wallet and returns the decision plus matched rules.
+        This is a dry run: it does not co-sign the transaction and does not
+        record velocity or any other state.
+      parameters:
+        - name: walletId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Stellar public key address of the wallet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                xdr:
+                  type: string
+                  description: Base64 encoded Stellar transaction envelope XDR to evaluate.
+                  example: AAAAAG...
+              required:
+                - xdr
+      responses:
+        '200':
+          description: Evaluation result (no state mutation)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleEvaluationResult'
+        '400':
+          description: Invalid request or malformed XDR
+        '404':
+          description: No policy found for wallet
+  /policy/{id}/versions:
+    get:
+      summary: List Policy Versions
+      description: Returns the immutable version history for a policy, newest first, including author and timestamp for each version.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Policy ID.
+      responses:
+        '200':
+          description: Policy version history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PolicyVersion'
+                  count:
+                    type: integer
+                    example: 3
+                required:
+                  - versions
+                  - count
+        '404':
+          description: Policy not found
+  /policy/{id}/rollback:
+    post:
+      summary: Roll Back Policy
+      description: Restores a policy to a previous immutable version, creating a new version recording the rollback.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Policy ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version:
+                  type: integer
+                  description: Version number to restore.
+                  example: 2
+              required:
+                - version
+      responses:
+        '200':
+          description: Policy rolled back successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '400':
+          description: Invalid rollback request
+        '404':
+          description: Policy or version not found
+  /policy/templates:
+    get:
+      summary: List Policy Templates
+      description: Returns the built-in named policy templates (conservative, payroll, dapp-session) validated against the rule schemas.
+      responses:
+        '200':
+          description: List of policy templates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                          example: conservative
+                        description:
+                          type: string
+                        rules:
+                          type: array
+                          items:
+                            type: object
+                      required:
+                        - name
+                        - rules
+                required:
+                  - templates
+  /policy/templates/{name}/apply:
+    post:
+      summary: Apply Policy Template
+      description: Applies a named policy template to a wallet, creating a new policy version.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [conservative, payroll, dapp-session]
+          description: Template name.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                walletId:
+                  type: string
+                  description: Stellar public key address of the wallet.
+                  example: GAD7654...
+              required:
+                - walletId
+      responses:
+        '200':
+          description: Template applied successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '400':
+          description: Invalid template or request
+        '404':
+          description: Template not found
+  /policy/{walletId}/export:
+    get:
+      summary: Export Wallet Policy
+      description: Exports the wallet policy as a validated JSON document suitable for import elsewhere.
+      parameters:
+        - name: walletId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Stellar public key address of the wallet.
+      responses:
+        '200':
+          description: Exported policy document
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  walletId:
+                    type: string
+                  rules:
+                    type: array
+                    items:
+                      type: object
+                required:
+                  - rules
+        '404':
+          description: No policy found for wallet
+  /policy/import:
+    post:
+      summary: Import Wallet Policy
+      description: Imports a JSON policy document, validating all rules against the rule schemas before storing a new policy version.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                walletId:
+                  type: string
+                  description: Stellar public key address of the wallet.
+                  example: GAD7654...
+                rules:
+                  type: array
+                  items:
+                    oneOf:
+                      - $ref: '#/components/schemas/SpendLimitRule'
+                      - $ref: '#/components/schemas/VelocityRule'
+                      - $ref: '#/components/schemas/AllowlistRule'
+                      - $ref: '#/components/schemas/MaxOperationsRule'
+                      - $ref: '#/components/schemas/ContractAllowlistRule'
+              required:
+                - walletId
+                - rules
+      responses:
+        '200':
+          description: Policy imported successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '400':
+          description: Invalid policy document
   /webhooks:
     get:
       summary: List Webhooks
@@ -870,66 +1107,78 @@ components:
         - id
         - walletId
         - rules
-    WalletMetadata:
+    PolicyVersion:
       type: object
-      properties:
-        address:
-          type: string
-          example: GAD7654...
-        label:
-          type: string
-          nullable: true
-          maxLength: 128
-          example: Treasury hot wallet
-        tags:
-          type: array
-          maxItems: 20
-          items:
-            type: string
-            maxLength: 64
-          example:
-            - treasury
-            - hot
-        metadata:
-          type: object
-          additionalProperties: true
-          example:
-            owner: alice@example.com
-        updatedAt:
-          type: string
-          format: date-time
-      required:
-        - address
-        - tags
-    DeadLetterEntry:
-      type: object
-      description: A failed webhook delivery retained in the dead-letter queue.
+      description: Immutable snapshot of a policy at a point in time.
       properties:
         id:
           type: string
           example: 550e8400-e29b-41d4-a716-446655440000
-        webhookId:
+        policyId:
           type: string
-          example: 550e8400-e29b-41d4-a716-446655440001
-        event:
-          type: string
-          example: transaction.cosigned
-        attempts:
+          example: 550e8400-e29b-41d4-a716-446655440000
+        version:
           type: integer
-          example: 5
-        lastError:
+          example: 1
+        walletId:
           type: string
-          nullable: true
-          example: HTTP 500
-        failedAt:
+          example: GAD7654...
+        rules:
+          type: array
+          items:
+            type: object
+        author:
+          type: string
+          description: Identifier of the actor that created this version.
+          example: admin
+        createdAt:
           type: string
           format: date-time
       required:
-        - id
-        - webhookId
-        - event
-        - attempts
-        - failedAt
+        - policyId
+        - version
+        - walletId
+        - rules
+        - createdAt
+    RuleEvaluationResult:
+      type: object
+      description: Outcome of a dry-run policy evaluation. No state is mutated.
+      properties:
+        allowed:
+          type: boolean
+          description: Whether the transaction would be approved by the policy.
+          example: true
+        matchedRules:
+          type: array
+          description: Rules that were evaluated and matched during the dry run.
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                example: spend_limit
+              passed:
+                type: boolean
+                example: true
+              reason:
+                type: string
+                nullable: true
+                example: null
+        violations:
+          type: array
+          description: Rules that would cause the transaction to be denied.
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                example: velocity
+              reason:
+                type: string
+                example: Velocity limit exceeded
+      required:
+        - allowed
+        - matchedRules
     WebhookConfig:
       type: object
       description: Registered webhook configuration (secret is never returned).

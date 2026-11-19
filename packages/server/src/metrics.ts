@@ -53,6 +53,12 @@ export const feeBumpRequestsTotal = new client.Counter({
   registers: [register],
 });
 
+export const feeSponsorFeeCapExceededTotal = new client.Counter({
+  name: "lumen_fee_sponsor_fee_cap_exceeded_total",
+  help: "Total number of fee-bump requests rejected by the sponsor surge guard because the bumped fee exceeded the configured maximum fee cap",
+  registers: [register],
+});
+
 export const sponsorBalanceXlm = new client.Gauge({
   name: "lumen_sponsor_balance_xlm",
   help: "Current balance of fee sponsor account in XLM",

@@ -217,6 +217,52 @@ describe("FeeSponsorService.wrapFeeBump()", () => {
     expect(feeBump.signatures).toHaveLength(1);
   });
 
+  it("rejects a fee-bump whose fee exceeds maxFeeStroops and increments the over-cap metric", async () => {
+    const onOverCapFee = vi.fn();
+    const service = new FeeSponsorService({
+      client: makeMockClient(),
+      signer,
+      baseFee: "1000000",
+      maxFeeStroops: "1000000",
+      onOverCapFee,
+    });
+
+    const innerXdr = buildSignedInnerTxXdr(
+      Keypair.random(),
+      Keypair.random().publicKey(),
+    );
+
+    await expect(service.wrapFeeBump(innerXdr)).rejects.toThrow(
+      /exceeds maximum/i,
+    );
+    expect(onOverCapFee).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows a fee-bump at or below maxFeeStroops", async () => {
+    const onOverCapFee = vi.fn();
+    const service = new FeeSponsorService({
+      client: makeMockClient(),
+      signer,
+      baseFee: "1000000",
+      maxFeeStroops: "2000000",
+      onOverCapFee,
+    });
+
+    const innerXdr = buildSignedInnerTxXdr(
+      Keypair.random(),
+      Keypair.random().publicKey(),
+    );
+
+    const feeBumpXdr = await service.wrapFeeBump(innerXdr);
+    const feeBump = TransactionBuilder.fromXDR(
+      feeBumpXdr,
+      Networks.STANDALONE,
+    ) as FeeBumpTransaction;
+
+    expect(Number(feeBump.fee)).toBeLessThanOrEqual(2000000);
+    expect(onOverCapFee).not.toHaveBeenCalled();
+  });
+
   it("throws when the input XDR is already a fee-bump transaction", async () => {
     const service = new FeeSponsorService({ client: makeMockClient(), signer });
 

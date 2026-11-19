@@ -272,4 +272,185 @@ describe("Policy API", () => {
     expect(typeof entry?.timestamp).toBe("string");
     expect(Number.isNaN(Date.parse(entry!.timestamp))).toBe(false);
   });
+
+  it("evaluates a transaction against the policy without mutating state", async () => {
+    const walletId = Keypair.random().publicKey();
+    const rules = [
+      { type: "max_operations", maxOperations: 2 },
+      { type: "velocity_limit", maxAmount: "100", windowSeconds: 3600 },
+    ];
+    const createResponse = await fetch(`${baseUrl}/policy`, {
+      method: "POST",
+      headers: authHeaders("admin"),
+      body: JSON.stringify({ walletId, rules }),
+    });
+    expect(createResponse.status).toBe(201);
+    const createdPolicy = await createResponse.json();
+
+    const xdr = "AAAAAgAAAAB-evaluate-dry-run-xdr";
+    const evaluate = async () => {
+      const response = await fetch(`${baseUrl}/policy/${walletId}/evaluate`, {
+        method: "POST",
+        headers: authHeaders("operator"),
+        body: JSON.stringify({ xdr }),
+      });
+      expect(response.status).toBe(200);
+      return response.json();
+    };
+
+    const first = await evaluate();
+    expect(first).toHaveProperty("decision");
+    expect(Array.isArray(first.matchedRules)).toBe(true);
+
+    const second = await evaluate();
+    expect(second.decision).toBe(first.decision);
+    expect(second.matchedRules).toEqual(first.matchedRules);
+    expect(second.velocity).toEqual(first.velocity);
+
+    const velocityRecords = await fetch(
+      `${baseUrl}/policy/${walletId}/velocity`,
+      { headers: authHeaders("admin") },
+    );
+    if (velocityRecords.status === 200) {
+      const body = await velocityRecords.json();
+      const records = Array.isArray(body) ? body : body.records ?? [];
+      expect(records).toHaveLength(0);
+    }
+
+    const policyAfter = await fetch(`${baseUrl}/policy/${walletId}`, {
+      headers: authHeaders("admin"),
+    });
+    expect(policyAfter.status).toBe(200);
+    const policyAfterBody = await policyAfter.json();
+    expect(policyAfterBody.version).toBe(createdPolicy.version);
+    expect(policyAfterBody.rules).toEqual(rules);
+  });
+
+  it("returns a version per policy change and supports rollback", async () => {
+    const walletId = Keypair.random().publicKey();
+    const v1Rules = [{ type: "max_operations", maxOperations: 2 }];
+    const v2Rules = [{ type: "max_operations", maxOperations: 5 }];
+
+    const createResponse = await fetch(`${baseUrl}/policy`, {
+      method: "POST",
+      headers: authHeaders("admin"),
+      body: JSON.stringify({ walletId, rules: v1Rules }),
+    });
+    expect(createResponse.status).toBe(201);
+    const createdPolicy = await createResponse.json();
+
+    const updateResponse = await fetch(`${baseUrl}/policy/${walletId}`, {
+      method: "PUT",
+      headers: { ...authHeaders("admin"), "If-Match": "1" },
+      body: JSON.stringify({ walletId, rules: v2Rules }),
+    });
+    expect(updateResponse.status).toBe(200);
+
+    const versionsResponse = await fetch(
+      `${baseUrl}/policy/${createdPolicy.id}/versions`,
+      { headers: authHeaders("admin") },
+    );
+    expect(versionsResponse.status).toBe(200);
+    const versionsBody = await versionsResponse.json();
+    const versions = Array.isArray(versionsBody)
+      ? versionsBody
+      : versionsBody.versions ?? [];
+    expect(versions).toHaveLength(2);
+    expect(versions.map((v: { version: number }) => v.version)).toEqual([1, 2]);
+    expect(versions[0].rules).toEqual(v1Rules);
+    expect(versions[1].rules).toEqual(v2Rules);
+
+    const rollbackResponse = await fetch(
+      `${baseUrl}/policy/${createdPolicy.id}/rollback`,
+      {
+        method: "POST",
+        headers: authHeaders("admin"),
+        body: JSON.stringify({ version: 1 }),
+      },
+    );
+    expect(rollbackResponse.status).toBe(200);
+    const rolledBack = await rollbackResponse.json();
+    expect(rolledBack.rules).toEqual(v1Rules);
+    expect(rolledBack.version).toBe(3);
+
+    const versionsAfter = await fetch(
+      `${baseUrl}/policy/${createdPolicy.id}/versions`,
+      { headers: authHeaders("admin") },
+    );
+    expect(versionsAfter.status).toBe(200);
+    const versionsAfterBody = await versionsAfter.json();
+    const versionsAfterList = Array.isArray(versionsAfterBody)
+      ? versionsAfterBody
+      : versionsAfterBody.versions ?? [];
+    expect(versionsAfterList).toHaveLength(3);
+    expect(versionsAfterList[2].rules).toEqual(v1Rules);
+  });
+
+  it("lists templates, applies a valid template, and rejects invalid rules", async () => {
+    const listResponse = await fetch(`${baseUrl}/policy/templates`, {
+      headers: authHeaders("admin"),
+    });
+    expect(listResponse.status).toBe(200);
+    const listBody = await listResponse.json();
+    const templates = Array.isArray(listBody) ? listBody : listBody.templates ?? [];
+    const names = templates.map((t: { name: string }) => t.name);
+    expect(names).toEqual(
+      expect.arrayContaining(["conservative", "payroll", "dapp-session"]),
+    );
+
+    const walletId = Keypair.random().publicKey();
+    const applyResponse = await fetch(`${baseUrl}/policy/templates/conservative/apply`, {
+      method: "POST",
+      headers: authHeaders("admin"),
+      body: JSON.stringify({ walletId }),
+    });
+    expect(applyResponse.status).toBe(201);
+    const applied = await applyResponse.json();
+    expect(Array.isArray(applied.rules)).toBe(true);
+    expect(applied.rules.length).toBeGreaterThan(0);
+
+    const invalidResponse = await fetch(`${baseUrl}/policy`, {
+      method: "POST",
+      headers: authHeaders("admin"),
+      body: JSON.stringify({
+        walletId: Keypair.random().publicKey(),
+        rules: [{ type: "not_a_real_rule" }],
+      }),
+    });
+    expect(invalidResponse.status).toBe(400);
+  });
+
+  it("round-trips a policy through export and import", async () => {
+    const walletId = Keypair.random().publicKey();
+    const rules = [
+      { type: "max_operations", maxOperations: 3 },
+      { type: "velocity_limit", maxAmount: "250", windowSeconds: 86400 },
+    ];
+    const createResponse = await fetch(`${baseUrl}/policy`, {
+      method: "POST",
+      headers: authHeaders("admin"),
+      body: JSON.stringify({ walletId, rules }),
+    });
+    expect(createResponse.status).toBe(201);
+    const createdPolicy = await createResponse.json();
+
+    const exportResponse = await fetch(
+      `${baseUrl}/policy/${createdPolicy.id}/export`,
+      { headers: authHeaders("admin") },
+    );
+    expect(exportResponse.status).toBe(200);
+    const exported = await exportResponse.json();
+    expect(exported.rules).toEqual(rules);
+
+    const importWalletId = Keypair.random().publicKey();
+    const importResponse = await fetch(`${baseUrl}/policy/import`, {
+      method: "POST",
+      headers: authHeaders("admin"),
+      body: JSON.stringify({ ...exported, walletId: importWalletId }),
+    });
+    expect(importResponse.status).toBe(201);
+    const imported = await importResponse.json();
+    expect(imported.walletId).toBe(importWalletId);
+    expect(imported.rules).toEqual(rules);
+  });
 });

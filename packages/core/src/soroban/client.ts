@@ -12,7 +12,8 @@ import type {
   ContractSimulationResult,
 } from "@lumen/types";
 import type { StellarClient } from "../stellar/client.js";
-import { toScVal, fromScVal } from "./scval.js";
+import { fromScVal } from "./scval.js";
+import { sc } from "./scval-builders.js";
 
 /**
  * Arguments for the spend-policy contract's `spend` method.
@@ -58,7 +59,7 @@ export class ContractClient {
    */
   buildInvocationOperation(invocation: ContractInvocation): xdr.Operation {
     const scValArgs: xdr.ScVal[] = (invocation.args ?? []).map((arg) =>
-      toScVal(arg)
+      sc.from(arg)
     );
 
     return Operation.invokeContractFunction({
@@ -139,9 +140,9 @@ export class ContractClient {
     contractId: string,
     args: SpendPolicySpendArgs
   ): ContractInvocation {
-    const scArgs: unknown[] = [args.asset, args.amount];
+    const scArgs: xdr.ScVal[] = [sc.address(args.asset), sc.i128(args.amount)];
     if (args.recipient !== undefined) {
-      scArgs.push(args.recipient);
+      scArgs.push(sc.address(args.recipient));
     }
     return {
       contractId,
@@ -161,7 +162,7 @@ export class ContractClient {
     return {
       contractId,
       method: "schedule_limit_change",
-      args: [args.asset, args.newLimit],
+      args: [sc.address(args.asset), sc.i128(args.newLimit)],
     };
   }
 
@@ -176,7 +177,7 @@ export class ContractClient {
     return {
       contractId,
       method: "apply_pending_limit",
-      args: [args.asset],
+      args: [sc.address(args.asset)],
     };
   }
 
@@ -191,7 +192,7 @@ export class ContractClient {
     return {
       contractId,
       method: "extend_ttl_if_needed",
-      args: [args.thresholdLedgers, args.extendBy],
+      args: [sc.u32(args.thresholdLedgers), sc.u32(args.extendBy)],
     };
   }
 

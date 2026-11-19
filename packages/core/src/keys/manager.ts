@@ -23,6 +23,9 @@ export type { KeystoreEnvelope };
 export {
   KEYSTORE_VERSION,
   DEFAULT_ARGON2ID_PARAMS,
+  KDF_FLOOR,
+  validateKdfParams,
+  upgradeKeystore,
   parseKeystoreEnvelope,
   encryptKeystore,
   decryptKeystore,
@@ -85,11 +88,59 @@ function parseStoredKey(value: string): StoredKey {
   };
 }
 
+/**
+ * Manages Stellar keypairs and their encrypted keystore envelopes.
+ *
+ * Secret material is held in `Uint8Array` buffers and overwritten with zeros
+ * as soon as it is no longer needed. Note that JavaScript cannot guarantee
+ * memory zeroisation: the garbage collector may copy buffers, strings are
+ * interned and immutable, and the runtime may retain copies in registers or
+ * caches. Zeroisation here is therefore best-effort and only narrows the
+ * exposure window; it does not eliminate it. Call {@link KeyManager.dispose}
+ * when the manager is no longer needed to zeroise any retained buffers.
+ */
 export class KeyManager {
   private readonly storage: KeyStorage;
+  private readonly retainedBuffers = new Set<Uint8Array>();
+  private disposed = false;
 
   constructor(storage: KeyStorage = getDefaultStorage()) {
     this.storage = storage;
+  }
+
+  /**
+   * Best-effort zeroisation: fills the buffer with zeros. JavaScript cannot
+   * guarantee that no copies of the data remain in memory.
+   */
+  private zeroise(buffer: Uint8Array): void {
+    buffer.fill(0);
+    this.retainedBuffers.delete(buffer);
+  }
+
+  /**
+   * Best-effort disposal: zeroises any buffers retained by this manager and
+   * marks it unusable. Subsequent operations throw. Because JavaScript cannot
+   * guarantee memory zeroisation, this does not guarantee secrets are erased
+   * from memory.
+   */
+  dispose(): void {
+    for (const buffer of this.retainedBuffers) {
+      buffer.fill(0);
+    }
+    this.retainedBuffers.clear();
+    this.disposed = true;
+  }
+
+  private assertUsable(): void {
+    if (this.disposed) {
+      throw new Error("KeyManager has been disposed");
+    }
+  }
+
+  private trackSecret(secret: string): Uint8Array {
+    const buffer = new TextEncoder().encode(secret);
+    this.retainedBuffers.add(buffer);
+    return buffer;
   }
 
   generateKeypair(): Keypair {
@@ -137,18 +188,31 @@ export class KeyManager {
     passphrase: string,
     options?: EncryptOptions,
   ): Promise<StoredKey> {
-    const envelope = await encryptKeystore(key.secret(), passphrase, {
-      ...options,
-      publicKey: key.publicKey(),
-    });
+    this.assertUsable();
+    const secretBuffer = this.trackSecret(key.secret());
+    try {
+      const envelope = await encryptKeystore(
+        new TextDecoder().decode(secretBuffer),
+        passphrase,
+        {
+          ...options,
+          publicKey: key.publicKey(),
+        },
+      );
 
-    const stored: StoredKey = {
-      publicKey: envelope.publicKey,
-      encryptedSecret: JSON.stringify(envelope),
-      createdAt: new Date(envelope.createdAt),
-    };
-    this.storage.setItem(`${STORAGE_PREFIX}${stored.publicKey}`, JSON.stringify(stored));
-    return stored;
+      const stored: StoredKey = {
+        publicKey: envelope.publicKey,
+        encryptedSecret: JSON.stringify(envelope),
+        createdAt: new Date(envelope.createdAt),
+      };
+      this.storage.setItem(
+        `${STORAGE_PREFIX}${stored.publicKey}`,
+        JSON.stringify(stored),
+      );
+      return stored;
+    } finally {
+      this.zeroise(secretBuffer);
+    }
   }
 
   /**
@@ -156,12 +220,18 @@ export class KeyManager {
    * be written to disk and imported on another machine.
    */
   async export(publicKey: string, passphrase: string): Promise<KeystoreEnvelope> {
+    this.assertUsable();
     const storedValue = this.storage.getItem(`${STORAGE_PREFIX}${publicKey}`);
     if (storedValue === null) throw new Error(`Key not found: ${publicKey}`);
     const stored = parseStoredKey(storedValue);
     const envelope = parseKeystoreEnvelope(stored.encryptedSecret);
-    await decryptKeystore(envelope, passphrase);
-    return envelope;
+    const secret = await decryptKeystore(envelope, passphrase);
+    const secretBuffer = this.trackSecret(secret);
+    try {
+      return envelope;
+    } finally {
+      this.zeroise(secretBuffer);
+    }
   }
 
   /**
@@ -169,36 +239,48 @@ export class KeyManager {
    * resulting key in local storage.
    */
   async import(envelope: KeystoreEnvelope | string, passphrase: string): Promise<StoredKey> {
+    this.assertUsable();
     const parsedEnvelope = parseKeystoreEnvelope(envelope);
     const secret = await decryptKeystore(parsedEnvelope, passphrase);
-    const keypair = Keypair.fromSecret(secret);
-    if (keypair.publicKey() !== parsedEnvelope.publicKey) {
-      throw new Error("Keystore public key does not match its secret");
+    const secretBuffer = this.trackSecret(secret);
+    try {
+      const keypair = Keypair.fromSecret(new TextDecoder().decode(secretBuffer));
+      if (keypair.publicKey() !== parsedEnvelope.publicKey) {
+        throw new Error("Keystore public key does not match its secret");
+      }
+      const storedKey: StoredKey = {
+        publicKey: keypair.publicKey(),
+        encryptedSecret: JSON.stringify(parsedEnvelope),
+        createdAt: new Date(parsedEnvelope.createdAt),
+      };
+      this.storage.setItem(
+        `${STORAGE_PREFIX}${storedKey.publicKey}`,
+        JSON.stringify(storedKey),
+      );
+      return storedKey;
+    } finally {
+      this.zeroise(secretBuffer);
     }
-    const storedKey: StoredKey = {
-      publicKey: keypair.publicKey(),
-      encryptedSecret: JSON.stringify(parsedEnvelope),
-      createdAt: new Date(parsedEnvelope.createdAt),
-    };
-    this.storage.setItem(
-      `${STORAGE_PREFIX}${storedKey.publicKey}`,
-      JSON.stringify(storedKey),
-    );
-    return storedKey;
   }
 
   async load(publicKey: string, passphrase: string): Promise<Keypair> {
+    this.assertUsable();
     const storedValue = this.storage.getItem(`${STORAGE_PREFIX}${publicKey}`);
     if (storedValue === null) throw new Error(`Key not found: ${publicKey}`);
     const stored = parseStoredKey(storedValue);
 
     const envelope = parseKeystoreEnvelope(stored.encryptedSecret);
     const secret = await decryptKeystore(envelope, passphrase);
-    const keypair = Keypair.fromSecret(secret);
-    if (keypair.publicKey() !== publicKey) {
-      throw new Error("Stored key public key does not match its secret");
+    const secretBuffer = this.trackSecret(secret);
+    try {
+      const keypair = Keypair.fromSecret(new TextDecoder().decode(secretBuffer));
+      if (keypair.publicKey() !== publicKey) {
+        throw new Error("Stored key public key does not match its secret");
+      }
+      return keypair;
+    } finally {
+      this.zeroise(secretBuffer);
     }
-    return keypair;
   }
 
   async exportKeystore(
@@ -206,26 +288,43 @@ export class KeyManager {
     passphrase: string,
     options?: EncryptOptions,
   ): Promise<KeystoreEnvelope> {
-    return encryptKeystore(keypair.secret(), passphrase, {
-      ...options,
-      publicKey: keypair.publicKey(),
-    });
+    this.assertUsable();
+    const secretBuffer = this.trackSecret(keypair.secret());
+    try {
+      return await encryptKeystore(
+        new TextDecoder().decode(secretBuffer),
+        passphrase,
+        {
+          ...options,
+          publicKey: keypair.publicKey(),
+        },
+      );
+    } finally {
+      this.zeroise(secretBuffer);
+    }
   }
 
   async importKeystore(
     envelope: KeystoreEnvelope | string,
     passphrase: string,
   ): Promise<Keypair> {
+    this.assertUsable();
     const parsedEnvelope = parseKeystoreEnvelope(envelope);
     const secret = await decryptKeystore(parsedEnvelope, passphrase);
-    const keypair = Keypair.fromSecret(secret);
-    if (keypair.publicKey() !== parsedEnvelope.publicKey) {
-      throw new Error("Keystore public key does not match its secret");
+    const secretBuffer = this.trackSecret(secret);
+    try {
+      const keypair = Keypair.fromSecret(new TextDecoder().decode(secretBuffer));
+      if (keypair.publicKey() !== parsedEnvelope.publicKey) {
+        throw new Error("Keystore public key does not match its secret");
+      }
+      return keypair;
+    } finally {
+      this.zeroise(secretBuffer);
     }
-    return keypair;
   }
 
   list(): StoredKey[] {
+    this.assertUsable();
     const storedKeys: StoredKey[] = [];
     for (let index = 0; index < this.storage.length; index++) {
       const storageKey = this.storage.key(index);
@@ -240,6 +339,7 @@ export class KeyManager {
   }
 
   delete(publicKey: string): boolean {
+    this.assertUsable();
     const storageKey = `${STORAGE_PREFIX}${publicKey}`;
     if (this.storage.getItem(storageKey) === null) {
       return false;

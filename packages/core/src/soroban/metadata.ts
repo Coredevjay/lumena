@@ -316,7 +316,8 @@ export function generateTypeScript(spec: ContractSpec, contractId?: string): str
     lines.push(`// Contract: ${contractId}`);
   }
   lines.push(`// Do not edit manually — regenerate from the contract WASM binary.\n`);
-  lines.push(`import { xdr, Address, nativeToScVal, scValToNative } from '@stellar/stellar-sdk';`);
+  lines.push(`import { xdr, scValToNative } from '@stellar/stellar-sdk';`);
+  lines.push(`import { sc } from '@lumen/core';`);
   lines.push(`import type { ContractClient } from '@lumen/core';\n`);
 
   // ── User-defined types ────────────────────────────────────────────────────
@@ -726,17 +727,18 @@ function sorobanTypeToTs(sorobanType: string): string {
  */
 function scValConverterFor(sorobanType: string, argName: string): string {
   switch (sorobanType) {
-    case 'Address': return `new Address(${argName}).toScVal()`;
-    case 'bool':    return `xdr.ScVal.scvBool(${argName})`;
-    case 'String':  return `xdr.ScVal.scvString(${argName})`;
-    case 'Symbol':  return `xdr.ScVal.scvSymbol(${argName})`;
-    case 'u32':     return `nativeToScVal(${argName}, { type: 'u32' })`;
-    case 'i32':     return `nativeToScVal(${argName}, { type: 'i32' })`;
-    case 'u64':     return `nativeToScVal(${argName}, { type: 'u64' })`;
-    case 'i64':     return `nativeToScVal(${argName}, { type: 'i64' })`;
-    case 'u128':    return `nativeToScVal(${argName}, { type: 'u128' })`;
-    case 'i128':    return `nativeToScVal(${argName}, { type: 'i128' })`;
-    default:        return `nativeToScVal(${argName})`;
+    case 'Address': return `sc.address(${argName})`;
+    case 'bool':    return `sc.bool(${argName})`;
+    case 'String':  return `sc.string(${argName})`;
+    case 'Symbol':  return `sc.symbol(${argName})`;
+    case 'u32':     return `sc.u32(${argName})`;
+    case 'i32':     return `sc.i32(${argName})`;
+    case 'u64':     return `sc.u64(${argName})`;
+    case 'i64':     return `sc.i64(${argName})`;
+    case 'u128':    return `sc.u128(${argName})`;
+    case 'i128':    return `sc.i128(${argName})`;
+    case 'Bytes':   return `sc.bytes(${argName})`;
+    default:        return `sc.value(${argName})`;
   }
 }
 

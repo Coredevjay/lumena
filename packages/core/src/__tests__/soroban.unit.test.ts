@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { Keypair, xdr } from "@stellar/stellar-sdk";
 import { StellarClient } from "../stellar/client.js";
-import { toScVal, fromScVal } from "../soroban/scval.js";
+import { toScVal, fromScVal, sc } from "../soroban/scval.js";
 import { ContractClient } from "../soroban/client.js";
 
 describe("Soroban ScVal Conversion & ContractClient Unit Tests", () => {
@@ -106,6 +106,81 @@ describe("Soroban ScVal Conversion & ContractClient Unit Tests", () => {
         }),
       ]);
       expect(fromScVal(scVal)).toEqual({ a: 1, b: 2 });
+    });
+  });
+
+  describe("sc builders", () => {
+    it("sc.address round-trips and validates input", () => {
+      const scVal = sc.address(userAddress);
+      expect(scVal.switch().name).toBe("scvAddress");
+      expect(fromScVal(scVal)).toBe(userAddress);
+
+      expect(() => sc.address("not-an-address")).toThrow();
+      expect(() => sc.address("")).toThrow();
+    });
+
+    it("sc.i128 round-trips and rejects out-of-range values", () => {
+      const scVal = sc.i128(-42n);
+      expect(scVal.switch().name).toBe("scvI128");
+      expect(fromScVal(scVal)).toBe(-42n);
+
+      const max = (1n << 127n) - 1n;
+      const min = -(1n << 127n);
+      expect(fromScVal(sc.i128(max))).toBe(max);
+      expect(fromScVal(sc.i128(min))).toBe(min);
+
+      expect(() => sc.i128(max + 1n)).toThrow();
+      expect(() => sc.i128(min - 1n)).toThrow();
+    });
+
+    it("sc.u64 round-trips and rejects out-of-range values", () => {
+      const scVal = sc.u64(123n);
+      expect(scVal.switch().name).toBe("scvU64");
+      expect(fromScVal(scVal)).toBe(123n);
+
+      const max = (1n << 64n) - 1n;
+      expect(fromScVal(sc.u64(max))).toBe(max);
+
+      expect(() => sc.u64(max + 1n)).toThrow();
+      expect(() => sc.u64(-1n)).toThrow();
+    });
+
+    it("sc.symbol round-trips and rejects invalid symbols", () => {
+      const scVal = sc.symbol("transfer");
+      expect(scVal.switch().name).toBe("scvSymbol");
+      expect(fromScVal(scVal)).toBe("transfer");
+
+      expect(() => sc.symbol("has space")).toThrow();
+      expect(() => sc.symbol("")).toThrow();
+      expect(() => sc.symbol("a".repeat(33))).toThrow();
+    });
+
+    it("sc.map round-trips and rejects duplicate keys", () => {
+      const scVal = sc.map({ a: 1, b: 2 });
+      expect(scVal.switch().name).toBe("scvMap");
+      expect(fromScVal(scVal)).toEqual({ a: 1, b: 2 });
+
+      expect(() =>
+        sc.map([
+          { key: sc.symbol("a"), value: sc.u32(1) },
+          { key: sc.symbol("a"), value: sc.u32(2) },
+        ]),
+      ).toThrow();
+    });
+
+    it("sc.vec round-trips and composes with nested values", () => {
+      const scVal = sc.vec([sc.u32(1), sc.symbol("two"), sc.bool(true)]);
+      expect(scVal.switch().name).toBe("scvVec");
+      expect(fromScVal(scVal)).toEqual([1, "two", true]);
+
+      const nested = sc.map({
+        items: sc.vec([sc.i128(1n), sc.i128(2n)]),
+        owner: sc.address(userAddress),
+      });
+      expect(fromScVal(nested)).toEqual({
+        items: [1n, 2n],
+        owner: userAddress,
+      });
     });
   });
 

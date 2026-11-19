@@ -1,5 +1,6 @@
-import { Horizon, rpc as sorobanRpc, Networks } from "@stellar/stellar-sdk";
+import { Horizon, rpc as sorobanRpc } from "@stellar/stellar-sdk";
 import type { StellarConfig, StellarNetwork } from "@lumen/types";
+import { FUTURENET, LOCAL, PUBLIC, TESTNET, resolveNetwork } from "../networks.js";
 import { SequenceNumberCache } from "./sequence-number-cache";
 import { crypto } from "../crypto";
 
@@ -7,30 +8,10 @@ type HorizonServer = InstanceType<typeof Horizon.Server>;
 type RpcServer = InstanceType<typeof sorobanRpc.Server>;
 
 const NETWORKS: Record<StellarNetwork, StellarConfig> = {
-  testnet: {
-    network: "testnet",
-    horizonUrl: "https://horizon-testnet.stellar.org",
-    rpcUrl: "https://soroban-testnet.stellar.org",
-    networkPassphrase: Networks.TESTNET,
-  },
-  mainnet: {
-    network: "mainnet",
-    horizonUrl: "https://horizon.stellar.org",
-    rpcUrl: "https://soroban-mainnet.stellar.org",
-    networkPassphrase: Networks.PUBLIC,
-  },
-  local: {
-    network: "local",
-    horizonUrl: "http://localhost:8000",
-    rpcUrl: "http://localhost:8000/rpc",
-    networkPassphrase: Networks.STANDALONE,
-  },
-  futurenet: {
-    network: "futurenet",
-    horizonUrl: "https://horizon-futurenet.stellar.org",
-    rpcUrl: "https://rpc-futurenet.stellar.org",
-    networkPassphrase: Networks.FUTURENET,
-  },
+  testnet: TESTNET,
+  mainnet: PUBLIC,
+  local: LOCAL,
+  futurenet: FUTURENET,
 };
 
 /**
@@ -156,7 +137,7 @@ export class StellarClient {
 
   constructor(opts: StellarClientOpts = {}) {
     const network = opts.network ?? "testnet";
-    const defaults = NETWORKS[network];
+    const defaults = resolveNetwork(network) ?? NETWORKS[network];
 
     this.config = {
       ...defaults,

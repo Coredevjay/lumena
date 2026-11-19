@@ -1,10 +1,14 @@
 "use client";
 
+import { resolveNetwork, TESTNET } from "@lumen/core";
 import { LumenProvider, LumenThemeProvider, useWallet } from "@lumen/react";
 import { LumenClient } from "@lumen/web-sdk";
 
+const network = resolveNetwork(process.env.NEXT_PUBLIC_LUMEN_NETWORK ?? TESTNET);
+
 const client = new LumenClient({
   serverUrl: process.env.NEXT_PUBLIC_LUMEN_SERVER_URL ?? "http://localhost:3000",
+  network,
 });
 
 function WalletPanel() {
@@ -19,7 +23,7 @@ function WalletPanel() {
 
 export default function Page() {
   return (
-    <LumenProvider client={client}>
+    <LumenProvider client={client} network={network}>
       <LumenThemeProvider>
         <WalletPanel />
       </LumenThemeProvider>

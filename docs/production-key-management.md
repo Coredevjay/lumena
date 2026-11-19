@@ -46,6 +46,32 @@ Because browser storage is accessible to same-origin scripts, protect the
 application against cross-site scripting and do not treat `localStorage` as a
 trusted secret store.
 
+### Best-effort zeroisation of in-memory secrets
+
+`KeyManager` holds decrypted secret key material in `Uint8Array`s rather than
+strings, and overwrites those buffers after each use (for example, immediately
+after signing). When you are done with a `KeyManager` instance, call
+`dispose()` to overwrite any remaining secret buffers it still holds.
+
+This is **best-effort only**. JavaScript cannot guarantee that secret bytes are
+erased from process memory:
+
+- The garbage collector may copy objects, leaving stale copies of the secret
+  in memory that you cannot reach or overwrite.
+- Strings are immutable and may be interned or deduplicated by the engine, so
+  any secret that ever passes through a string cannot be zeroed.
+- Engine optimisations (JIT, escape analysis, register allocation) may keep
+  additional copies of the data outside the `Uint8Array` you control.
+
+Treat zeroisation as a way to narrow the exposure window, not as a hard
+security boundary. Do not rely on it to protect against an attacker who can
+read process memory.
+
+Callers should also avoid retaining secret strings returned by the SDK: for
+example, do not store the `secret()` string of a `Keypair` in long-lived
+variables, logs, or caches. Convert to a `Uint8Array` where possible and
+overwrite it when finished.
+
 ---
 
 ## 2. Default (dev) configuration

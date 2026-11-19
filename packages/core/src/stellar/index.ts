@@ -1,7 +1,6 @@
 import {
   Horizon,
   Keypair,
-  Networks,
   TransactionBuilder,
   Account,
   Operation,
@@ -10,14 +9,8 @@ import {
   BASE_FEE,
 } from '@stellar/stellar-sdk';
 
-/**
- * Options for configuring a {@link SequenceNumberCache}.
- *
- * @example
- * ```ts
- * const cache = new SequenceNumberCache({ ttlMs: 60_000 });
- * ```
- */
+import { TESTNET } from '../networks.js';
+
 export interface SequenceNumberCacheOptions {
   /**
    * Time-to-live for cached sequence numbers in milliseconds.
@@ -193,7 +186,7 @@ export class StellarClient {
    * ```
    */
   constructor(
-    horizonUrl: string = 'https://horizon-testnet.stellar.org',
+    horizonUrl: string = TESTNET.horizonUrl,
     options: StellarClientOptions = {},
   ) {
     this.horizon = new Horizon.Server(horizonUrl);
@@ -253,7 +246,7 @@ export class StellarClient {
     const builder = new TransactionBuilder(account, {
       fee: options.fee ?? BASE_FEE,
       memo: options.memo,
-      networkPassphrase: options.networkPassphrase ?? Networks.TESTNET,
+      networkPassphrase: options.networkPassphrase ?? TESTNET.networkPassphrase,
     });
 
     for (const operation of operations) {

@@ -144,6 +144,56 @@ export interface HdWalletOpts {
 }
 
 /**
+ * Minimal Horizon account-loading surface used by `discoverAccounts`.
+ *
+ * This matches the shape of `Horizon.Server#loadAccount` from
+ * `@stellar/stellar-sdk`, but is kept structural so callers can inject a
+ * mock (e.g. in tests) without any network access.
+ */
+export interface HorizonAccountLoader {
+  /**
+   * Loads an account by its Stellar public key.
+   * Should reject (throw) when the account does not exist on the network.
+   */
+  loadAccount(publicKey: string): Promise<unknown>;
+}
+
+/**
+ * Options for `HdWallet.discoverAccounts`.
+ */
+export interface DiscoverAccountsOpts {
+  /**
+   * Number of consecutive unused account indexes to scan before stopping.
+   * Must be a positive integer. Defaults to `DEFAULT_GAP_LIMIT` (20).
+   */
+  gapLimit?: number;
+  /**
+   * Horizon server (or any object with a `loadAccount(publicKey)` method)
+   * used to check account existence/activity. Required — inject a mock in
+   * tests to avoid network access.
+   */
+  horizon?: HorizonAccountLoader;
+}
+
+/**
+ * Result of `HdWallet.discoverAccounts`.
+ */
+export interface DiscoverAccountsResult {
+  /** Derived accounts that were found to exist / have activity on Horizon. */
+  accounts: HdDerivedAccount[];
+  /**
+   * Highest account index that was found to be used, or `-1` if no accounts
+   * were found to be used.
+   */
+  highestUsedIndex: number;
+  /** The gap limit that was applied during discovery. */
+  gapLimit: number;
+}
+
+/** Default gap limit used by `discoverAccounts` when none is provided. */
+export const DEFAULT_GAP_LIMIT = 20;
+
+/**
  * BIP-44 HD Wallet for Stellar.
  *
  * Derives accounts under the path `m/44'/148'/<accountIndex>'` as defined in
@@ -287,5 +337,81 @@ export class HdWallet {
       accounts.push(await this.deriveAccount(i));
     }
     return accounts;
+  }
+
+  /**
+   * Discovers previously used accounts by scanning Horizon for account
+   * existence/activity, starting at index 0.
+   *
+   * Scanning proceeds sequentially from index 0. Each derived account's
+   * public key is checked against Horizon via `horizon.loadAccount`. An
+   * account is considered "used" when `loadAccount` resolves successfully.
+   * Scanning stops once `gapLimit` consecutive unused indexes have been
+   * observed (the standard BIP-44 gap-limit heuristic).
+   *
+   * @param opts.gapLimit - Consecutive unused indexes tolerated before
+   *   stopping. Must be a positive integer. Defaults to `DEFAULT_GAP_LIMIT`.
+   * @param opts.horizon  - Horizon server or any object exposing
+   *   `loadAccount(publicKey)`. Required; inject a mock in tests.
+   * @returns The used accounts (ordered by index), the highest used index
+   *   (`-1` if none), and the applied gap limit.
+   *
+   * @example
+   * ```ts
+   * const result = await wallet.discoverAccounts({
+   *   gapLimit: 20,
+   *   horizon: server, // Horizon.Server instance or a mock
+   * });
+   * console.log(result.accounts.map((a) => a.publicKey));
+   * ```
+   */
+  async discoverAccounts(opts: DiscoverAccountsOpts): Promise<DiscoverAccountsResult> {
+    if (!opts || typeof opts !== "object") {
+      throw new Error("HdWallet.discoverAccounts: options object is required");
+    }
+
+    const gapLimit = opts.gapLimit ?? DEFAULT_GAP_LIMIT;
+    if (!Number.isInteger(gapLimit) || gapLimit < 1) {
+      throw new Error(
+        `HdWallet.discoverAccounts: gapLimit must be a positive integer, got ${gapLimit}`,
+      );
+    }
+
+    const horizon = opts.horizon;
+    if (!horizon || typeof horizon.loadAccount !== "function") {
+      throw new Error(
+        "HdWallet.discoverAccounts: a horizon server with a loadAccount(publicKey) method is required",
+      );
+    }
+
+    const accounts: HdDerivedAccount[] = [];
+    let highestUsedIndex = -1;
+    let consecutiveUnused = 0;
+    let index = 0;
+
+    while (consecutiveUnused < gapLimit) {
+      const account = await this.deriveAccount(index);
+
+      let used = false;
+      try {
+        await horizon.loadAccount(account.publicKey);
+        used = true;
+      } catch {
+        // Account not found / not funded on Horizon → treat as unused.
+        used = false;
+      }
+
+      if (used) {
+        accounts.push(account);
+        highestUsedIndex = index;
+        consecutiveUnused = 0;
+      } else {
+        consecutiveUnused++;
+      }
+
+      index++;
+    }
+
+    return { accounts, highestUsedIndex, gapLimit };
   }
 }

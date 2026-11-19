@@ -7,11 +7,18 @@ import {
   getAssetFlags,
   getAssetFlagWarnings,
   setupMultisig,
-  crypto,
+  resolveNetwork,
+  TESTNET,
+  PUBLIC,
+  FUTURENET,
+  LOCAL,
   type AssetFlags,
   type PasskeyRegistrationOpts,
 } from "@lumen/core";
 import type { StellarNetwork, ContractSimulationResult, ScValInput } from "@lumen/types";
+
+export { TESTNET, PUBLIC, FUTURENET, LOCAL, resolveNetwork };
+export type { NetworkConfig } from "@lumen/core";
 
 export interface LumenClientOpts {
   network?: StellarNetwork;
@@ -80,10 +87,11 @@ export class LumenClient {
       );
     }
 
+    const network = resolveNetwork(opts.network);
     this.client = new StellarClient({
-      network: opts.network,
-      horizonUrl: opts.horizonUrl,
-      rpcUrl: opts.rpcUrl,
+      network: network.name,
+      horizonUrl: opts.horizonUrl ?? network.horizonUrl,
+      rpcUrl: opts.rpcUrl ?? network.rpcUrl,
     });
     this.serverPublicKey = opts.serverPublicKey;
     this.serverUrl = opts.serverUrl.replace(/\/+$/, "");

@@ -162,6 +162,82 @@ describe("KeyManager", () => {
     });
   });
 
+  describe("secret zeroisation", () => {
+    it("zeroises the secret bytes after load", async () => {
+      const kp = keyManager.generateKeypair();
+      const stored = await keyManager.store(kp, "test-passphrase");
+
+      const loaded = await keyManager.load(stored.publicKey, "test-passphrase");
+      expect(loaded.publicKey()).toBe(kp.publicKey());
+
+      const retained = keyManager.__getRetainedSecretsForTesting();
+      expect(retained.length).toBeGreaterThan(0);
+      for (const bytes of retained) {
+        expect(bytes.every((b) => b === 0)).toBe(true);
+      }
+    });
+
+    it("zeroises the secret bytes after importKeystore", async () => {
+      const kp = keyManager.generateKeypair();
+      const envelope = await keyManager.exportKeystore(kp, "strong-password");
+
+      const restored = await keyManager.importKeystore(envelope, "strong-password");
+      expect(restored.publicKey()).toBe(kp.publicKey());
+
+      const retained = keyManager.__getRetainedSecretsForTesting();
+      expect(retained.length).toBeGreaterThan(0);
+      for (const bytes of retained) {
+        expect(bytes.every((b) => b === 0)).toBe(true);
+      }
+    });
+
+    it("zeroises the secret bytes after exportKeystore", async () => {
+      const kp = keyManager.generateKeypair();
+      await keyManager.exportKeystore(kp, "strong-password");
+
+      const retained = keyManager.__getRetainedSecretsForTesting();
+      expect(retained.length).toBeGreaterThan(0);
+      for (const bytes of retained) {
+        expect(bytes.every((b) => b === 0)).toBe(true);
+      }
+    });
+
+    it("dispose() zeroises retained buffers and subsequent operations throw", async () => {
+      const kp = keyManager.generateKeypair();
+      const stored = await keyManager.store(kp, "test-passphrase");
+      await keyManager.load(stored.publicKey, "test-passphrase");
+
+      const retained = keyManager.__getRetainedSecretsForTesting();
+      expect(retained.length).toBeGreaterThan(0);
+
+      keyManager.dispose();
+
+      for (const bytes of retained) {
+        expect(bytes.every((b) => b === 0)).toBe(true);
+      }
+
+      expect(() => keyManager.generateKeypair()).toThrow();
+      await expect(keyManager.load(stored.publicKey, "test-passphrase")).rejects.toThrow();
+      await expect(keyManager.store(kp, "test-passphrase")).rejects.toThrow();
+    });
+
+    it("does not retain the plaintext secret string on the manager after signing", async () => {
+      const kp = keyManager.generateKeypair();
+      const secret = kp.secret();
+
+      const signed = keyManager.sign(kp, "payload-to-sign");
+      expect(signed).toBeTruthy();
+
+      const ownValues = Object.values(keyManager as unknown as Record<string, unknown>);
+      for (const value of ownValues) {
+        if (typeof value === "string") {
+          expect(value).not.toBe(secret);
+          expect(value).not.toContain(secret);
+        }
+      }
+    });
+  });
+
   describe("encrypted keystore export/import", () => {
     it("exports an envelope containing salt, IV, ciphertext and auth tag", async () => {
       const kp = keyManager.generateKeypair();
@@ -231,6 +307,76 @@ describe("KeyManager", () => {
 
       expect(first.salt).not.toBe(second.salt);
       expect(first.iv).not.toBe(second.iv);
+    });
+  });
+
+  describe("versioned keystore format and KDF parameters", () => {
+    it("unlocks a hand-crafted legacy v1 envelope without a kdf field", async () => {
+      const kp = keyManager.generateKeypair();
+      const envelope = await keyManager.exportKeystore(kp, "strong-password");
+
+      // Simulate a legacy v1 envelope: no kdf field, version 1.
+      const legacy = { ...envelope, version: 1 } as Record<string, unknown>;
+      delete legacy.kdf;
+
+      const restored = await keyManager.importKeystore(legacy as never, "strong-password");
+      expect(restored.publicKey()).toBe(kp.publicKey());
+      expect(restored.secret()).toBe(kp.secret());
+    });
+
+    it("rejects a v2 envelope whose KDF parameters are below the floor", async () => {
+      const kp = keyManager.generateKeypair();
+      const envelope = await keyManager.exportKeystore(kp, "strong-password");
+
+      const weak = {
+        ...envelope,
+        version: 2,
+        kdf: { memory: 8, iterations: 1, parallelism: 1 },
+      };
+
+      await expect(keyManager.importKeystore(weak as never, "strong-password")).rejects.toThrow(
+        /WEAK_KDF_PARAMS/,
+      );
+    });
+
+    it("auto-upgrades a legacy stored record on unlock", async () => {
+      const storage = createStorage();
+      const manager = new KeyManager(storage);
+      const kp = manager.generateKeypair();
+      const stored = await manager.store(kp, "test-passphrase");
+
+      // Downgrade the persisted record to a legacy v1 format without kdf.
+      const storageKey = `lumen:key-manager:${stored.publicKey}`;
+      const raw = storage.getItem(storageKey);
+      expect(raw).not.toBeNull();
+      const record = JSON.parse(raw as string) as Record<string, unknown>;
+      record.version = 1;
+      delete record.kdf;
+      storage.setItem(storageKey, JSON.stringify(record));
+
+      const loaded = await manager.load(stored.publicKey, "test-passphrase");
+      expect(loaded.publicKey()).toBe(kp.publicKey());
+
+      const upgraded = JSON.parse(storage.getItem(storageKey) as string) as Record<string, unknown>;
+      expect(upgraded.version).toBeGreaterThan(1);
+      expect(upgraded.kdf).toBeDefined();
+      expect(upgraded.kdf).toMatchObject({
+        memory: expect.any(Number),
+        iterations: expect.any(Number),
+        parallelism: expect.any(Number),
+      });
+    });
+
+    it("round-trips with custom valid KDF parameters", async () => {
+      const kp = keyManager.generateKeypair();
+      const kdf = { memory: 65536, iterations: 4, parallelism: 2 };
+
+      const envelope = await keyManager.exportKeystore(kp, "strong-password", { kdf });
+      expect(envelope.kdf).toMatchObject(kdf);
+
+      const restored = await keyManager.importKeystore(envelope, "strong-password");
+      expect(restored.publicKey()).toBe(kp.publicKey());
+      expect(restored.secret()).toBe(kp.secret());
     });
   });
 });

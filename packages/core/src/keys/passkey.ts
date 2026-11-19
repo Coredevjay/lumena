@@ -242,6 +242,31 @@ export interface PasskeyRegistrationOpts {
   username: string;
   rpName?: string;
   challenge?: Uint8Array;
+  /** Relying party ID (defaults to the current host when available). */
+  rpId?: string;
+  /** Require the authenticator to perform user verification. */
+  requireUserVerification?: boolean;
+  /** Credential kind hint for the multi-credential registry. */
+  kind?: PasskeyCredentialKind;
+}
+
+/** Classification of a registered passkey credential. */
+export type PasskeyCredentialKind = "synced" | "hardware";
+
+/**
+ * A single registered passkey belonging to a wallet.
+ */
+export interface PasskeyRecord {
+  /** base64url-encoded credential ID. */
+  id: string;
+  /** Raw credential ID bytes. */
+  rawId: ArrayBuffer;
+  /** Whether the credential is a synced (platform) or hardware authenticator. */
+  kind: PasskeyCredentialKind;
+  /** COSE-encoded public key bytes captured at registration, when available. */
+  publicKey?: ArrayBuffer;
+  /** Creation timestamp (ms since epoch). */
+  createdAt: number;
 }
 
 export interface PasskeyAssertionOpts {
@@ -250,6 +275,73 @@ export interface PasskeyAssertionOpts {
 }
 
 export class PasskeyManager {
+  /**
+   * In-memory registry of passkeys keyed by wallet/username. Each wallet may
+   * hold multiple credentials (synced and hardware) so that losing one device
+   * does not lock the user out.
+   */
+  private static registry: Map<string, PasskeyRecord[]> = new Map();
+
+  /** Returns the registered passkeys for a wallet (empty array when none). */
+  static listPasskeys(username: string): PasskeyRecord[] {
+    return [...(PasskeyManager.registry.get(username) ?? [])];
+  }
+
+  /** Clears the registry (primarily for tests). */
+  static clearPasskeyRegistry(username?: string): void {
+    if (username === undefined) {
+      PasskeyManager.registry.clear();
+    } else {
+      PasskeyManager.registry.delete(username);
+    }
+  }
+
+  private static appendPasskey(username: string, record: PasskeyRecord): void {
+    const existing = PasskeyManager.registry.get(username) ?? [];
+    if (existing.some((r) => r.id === record.id)) return;
+    existing.push(record);
+    PasskeyManager.registry.set(username, existing);
+  }
+
+  /**
+   * Registers an additional passkey for an existing wallet and appends it to
+   * the multi-credential registry.
+   */
+  async addPasskey(opts: PasskeyRegistrationOpts): Promise<{
+    credentialId: string;
+    keypair: Keypair;
+    credential: PasskeyCredential;
+    record: PasskeyRecord;
+  }> {
+    const result = await this.registerPasskey(opts);
+    const record = PasskeyManager.listPasskeys(opts.username).find(
+      (r) => r.id === result.credentialId,
+    );
+    if (!record) {
+      throw new Error("addPasskey: credential was not recorded in the registry");
+    }
+    return { ...result, record };
+  }
+
+  /**
+   * Removes a passkey from a wallet's registry.
+   *
+   * @throws {Error} when the credential is unknown or when removing it would
+   *         leave the wallet without any valid credential.
+   */
+  static removePasskey(username: string, credentialId: string): void {
+    const existing = PasskeyManager.registry.get(username) ?? [];
+    const index = existing.findIndex((r) => r.id === credentialId);
+    if (index === -1) {
+      throw new Error(`removePasskey: unknown credential "${credentialId}"`);
+    }
+    if (existing.length <= 1) {
+      throw new Error("removePasskey: cannot remove the last credential for a wallet");
+    }
+    existing.splice(index, 1);
+    PasskeyManager.registry.set(username, existing);
+  }
+
   static isWebAuthnSupported(): boolean {
     return (
       typeof window !== "undefined" &&
@@ -277,8 +369,12 @@ export class PasskeyManager {
   }> {
     const cryptoAdapter = getCrypto();
     const rpName = opts.rpName ?? "Lumen Wallet";
-    const challenge = opts.challenge ?? cryptoAdapter.getRandomValues(new Uint8Array(32));
-    const userId = cryptoAdapter.getRandomValues(new Uint8Array(16));
+    const challenge = opts.challenge ?? crypto.getRandomValues(new Uint8Array(32));
+    const userId = crypto.getRandomValues(new Uint8Array(16));
+    const userVerification = opts.requireUserVerification ? "required" : "preferred";
+    const rpId =
+      opts.rpId ??
+      (typeof window !== "undefined" && window.location ? window.location.hostname : undefined);
 
     let credentialId: string;
     let keypair: Keypair;
@@ -291,7 +387,7 @@ export class PasskeyManager {
 
       const publicKeyCredentialCreationOptions: PublicKeyCredentialCreationOptions = {
         challenge: challenge as BufferSource,
-        rp: { name: rpName },
+        rp: rpId ? { id: rpId, name: rpName } : { name: rpName },
         user: {
           id: userId as BufferSource,
           name: opts.username,
@@ -302,9 +398,10 @@ export class PasskeyManager {
           { alg: -257, type: "public-key" }, // RS256
         ],
         authenticatorSelection: {
-          userVerification: "preferred",
+          userVerification,
           residentKey: "preferred",
         },
+        attestation: "none",
         extensions: {
           prf: {
             eval: {
@@ -348,6 +445,20 @@ export class PasskeyManager {
         },
         prfResults: prfOutput ? { first: prfOutput } : undefined,
       };
+
+      const attestationResponse = credential.response as AuthenticatorAttestationResponse;
+      const publicKeyBytes =
+        typeof attestationResponse.getPublicKey === "function"
+          ? attestationResponse.getPublicKey()
+          : null;
+
+      PasskeyManager.appendPasskey(opts.username, {
+        id: credentialId,
+        rawId,
+        kind: opts.kind ?? "synced",
+        publicKey: publicKeyBytes ?? undefined,
+        createdAt: Date.now(),
+      });
     } else {
       // Fallback for non-browser / mock environment
       const encoder = new TextEncoder();
@@ -362,6 +473,13 @@ export class PasskeyManager {
           clientDataJSON: encoder.encode(JSON.stringify({ type: "webauthn.create", origin: "http://localhost" })).buffer,
         },
       };
+
+      PasskeyManager.appendPasskey(opts.username, {
+        id: credentialId,
+        rawId: mockRawId.buffer as ArrayBuffer,
+        kind: opts.kind ?? "synced",
+        createdAt: Date.now(),
+      });
     }
 
     return { credentialId, keypair, credential: credentialObj };
@@ -479,4 +597,199 @@ export class PasskeyManager {
 
     return Keypair.fromRawEd25519Seed(seed);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Server-side registration verification (#526)
+// ---------------------------------------------------------------------------
+
+/** Attestation formats supported by {@link verifyRegistrationResponse}. */
+export type SupportedAttestationFormat = "none" | "packed";
+
+export interface VerifyRegistrationOpts {
+  /** Raw `clientDataJSON` bytes from the registration response. */
+  clientDataJSON: ArrayBuffer | Uint8Array;
+  /** Raw `attestationObject` bytes from the registration response. */
+  attestationObject: ArrayBuffer | Uint8Array;
+  /** Expected origin, e.g. `https://wallet.example.com`. */
+  expectedOrigin: string;
+  /** Expected relying party ID hash (SHA-256 of the RP ID), 32 bytes. */
+  expectedRpIdHash: ArrayBuffer | Uint8Array;
+  /** The base64url challenge the server issued. */
+  expectedChallenge?: string;
+  /** When true, the UV flag in authenticatorData must be set. */
+  requireUserVerification?: boolean;
+}
+
+export interface VerifyRegistrationResult {
+  valid: boolean;
+  /** Attestation format declared by the authenticator. */
+  fmt: string;
+  /** Whether the user verification flag was set. */
+  userVerified: boolean;
+  /** The base64url challenge extracted from clientDataJSON. */
+  challenge: string;
+}
+
+/**
+ * Minimal CBOR decoder sufficient for WebAuthn attestation objects
+ * (`{ fmt, attStmt, authData }`). Supports unsigned integers, byte strings,
+ * text strings, arrays and maps — the subset used by `none`/`packed`.
+ */
+function decodeCbor(input: Uint8Array): unknown {
+  let offset = 0;
+
+  const readLength = (info: number): number => {
+    if (info < 24) return info;
+    if (info === 24) return input[offset++]!;
+    if (info === 25) {
+      const v = (input[offset]! << 8) | input[offset + 1]!;
+      offset += 2;
+      return v;
+    }
+    if (info === 26) {
+      const v =
+        (input[offset]! << 24) |
+        (input[offset + 1]! << 16) |
+        (input[offset + 2]! << 8) |
+        input[offset + 3]!;
+      offset += 4;
+      return v >>> 0;
+    }
+    throw new Error("CBOR: unsupported length encoding");
+  };
+
+  const decodeItem = (): unknown => {
+    const initial = input[offset++]!;
+    const major = initial >> 5;
+    const info = initial & 0x1f;
+    switch (major) {
+      case 0:
+        return readLength(info);
+      case 1:
+        return -1 - readLength(info);
+      case 2: {
+        const len = readLength(info);
+        const bytes = input.slice(offset, offset + len);
+        offset += len;
+        return bytes;
+      }
+      case 3: {
+        const len = readLength(info);
+        const text = new TextDecoder().decode(input.slice(offset, offset + len));
+        offset += len;
+        return text;
+      }
+      case 4: {
+        const len = readLength(info);
+        const arr: unknown[] = [];
+        for (let i = 0; i < len; i++) arr.push(decodeItem());
+        return arr;
+      }
+      case 5: {
+        const len = readLength(info);
+        const map = new Map<unknown, unknown>();
+        for (let i = 0; i < len; i++) {
+          const key = decodeItem();
+          map.set(key, decodeItem());
+        }
+        return map;
+      }
+      default:
+        throw new Error(`CBOR: unsupported major type ${major}`);
+    }
+  };
+
+  return decodeItem();
+}
+
+/**
+ * Verifies a WebAuthn registration (attestation) response on the server.
+ *
+ * Validates:
+ *   - `clientDataJSON.type === "webauthn.create"`
+ *   - `clientDataJSON.origin === expectedOrigin`
+ *   - challenge matches `expectedChallenge` (when provided)
+ *   - attestation format is `none` or `packed`
+ *   - RP ID hash in `authenticatorData` matches `expectedRpIdHash`
+ *   - the UV flag is set when `requireUserVerification` is true
+ *
+ * @throws {Error} when inputs are malformed.
+ */
+export async function verifyRegistrationResponse(
+  opts: VerifyRegistrationOpts,
+): Promise<VerifyRegistrationResult> {
+  const clientDataBytes =
+    opts.clientDataJSON instanceof Uint8Array
+      ? opts.clientDataJSON
+      : new Uint8Array(opts.clientDataJSON);
+
+  let clientData: Record<string, unknown>;
+  try {
+    clientData = JSON.parse(new TextDecoder().decode(clientDataBytes)) as Record<string, unknown>;
+  } catch {
+    throw new Error("WebAuthn registration: clientDataJSON is not valid JSON");
+  }
+
+  if (clientData["type"] !== "webauthn.create") {
+    throw new Error(
+      `WebAuthn registration: unexpected type "${String(clientData["type"])}", expected "webauthn.create"`,
+    );
+  }
+
+  if (clientData["origin"] !== opts.expectedOrigin) {
+    throw new Error(
+      `WebAuthn registration: origin mismatch — expected "${opts.expectedOrigin}", got "${String(clientData["origin"])}"`,
+    );
+  }
+
+  const challenge = String(clientData["challenge"] ?? "");
+  if (opts.expectedChallenge !== undefined && challenge !== opts.expectedChallenge) {
+    throw new Error(
+      `WebAuthn registration: challenge mismatch — expected "${opts.expectedChallenge}", got "${challenge}"`,
+    );
+  }
+
+  const attestationBytes =
+    opts.attestationObject instanceof Uint8Array
+      ? opts.attestationObject
+      : new Uint8Array(opts.attestationObject);
+
+  const decoded = decodeCbor(attestationBytes);
+  if (!(decoded instanceof Map)) {
+    throw new Error("WebAuthn registration: attestationObject is not a CBOR map");
+  }
+
+  const fmt = decoded.get("fmt");
+  if (fmt !== "none" && fmt !== "packed") {
+    throw new Error(`WebAuthn registration: unsupported attestation format "${String(fmt)}"`);
+  }
+
+  const authData = decoded.get("authData");
+  if (!(authData instanceof Uint8Array) || authData.byteLength < 37) {
+    throw new Error("WebAuthn registration: missing or truncated authenticatorData");
+  }
+
+  const expectedRpIdHash =
+    opts.expectedRpIdHash instanceof Uint8Array
+      ? opts.expectedRpIdHash
+      : new Uint8Array(opts.expectedRpIdHash);
+  if (expectedRpIdHash.byteLength !== 32) {
+    throw new Error("WebAuthn registration: expectedRpIdHash must be 32 bytes");
+  }
+
+  const rpIdHash = authData.slice(0, 32);
+  for (let i = 0; i < 32; i++) {
+    if (rpIdHash[i] !== expectedRpIdHash[i]) {
+      throw new Error("WebAuthn registration: RP ID hash mismatch");
+    }
+  }
+
+  const flags = authData[32]!;
+  const userVerified = (flags & 0x04) !== 0;
+  if (opts.requireUserVerification && !userVerified) {
+    throw new Error("WebAuthn registration: user verification required but UV flag is not set");
+  }
+
+  return { valid: true, fmt, userVerified, challenge };
 }

@@ -21,7 +21,10 @@ import {
 } from '../crypto/index.js';
 
 /** Current keystore envelope version. */
-export const KEYSTORE_VERSION = 1 as const;
+export const KEYSTORE_VERSION = 2 as const;
+
+/** Legacy (v1) keystore envelope version, still accepted on parse/decrypt. */
+export const LEGACY_KEYSTORE_VERSION = 1 as const;
 
 /** Supported key-derivation functions. */
 export type KdfName = 'argon2id' | 'pbkdf2';
@@ -29,14 +32,23 @@ export type KdfName = 'argon2id' | 'pbkdf2';
 /** Supported cipher identifier. */
 export type CipherName = 'aes-256-gcm';
 
-/** Argon2id key-derivation parameters. */
-export interface Argon2idParams {
+/**
+ * Explicit, tunable Argon2id cost parameters stored with the envelope.
+ *
+ * These are the tunable knobs referenced by the versioned keystore format:
+ * `memory` (KiB), `iterations` (time cost) and `parallelism` (lanes).
+ */
+export interface KdfCostParams {
   /** Memory cost in kibibytes. */
-  memoryKiB: number;
+  memory: number;
   /** Number of iterations (time cost). */
   iterations: number;
   /** Degree of parallelism. */
   parallelism: number;
+}
+
+/** Argon2id key-derivation parameters. */
+export interface Argon2idParams extends KdfCostParams {
   /** Derived key length in bytes. */
   keyLength: number;
 }
@@ -57,7 +69,7 @@ export type KdfParams = Argon2idParams | Pbkdf2Params;
 /** Versioned encrypted keystore envelope. */
 export interface KeystoreEnvelope {
   /** Envelope format version. */
-  version: typeof KEYSTORE_VERSION;
+  version: typeof KEYSTORE_VERSION | typeof LEGACY_KEYSTORE_VERSION;
   /** Key-derivation function used to derive the AES key. */
   kdf: KdfName;
   /** Parameters for the selected KDF. */
@@ -92,7 +104,29 @@ export interface EncryptOptions {
 
 /** Default Argon2id parameters (OWASP-recommended baseline). */
 export const DEFAULT_ARGON2ID_PARAMS: Argon2idParams = {
-  memoryKiB: 64 * 1024, // 64 MiB
+  memory: 64 * 1024, // 64 MiB
+  iterations: 3,
+  parallelism: 1,
+  keyLength: 32,
+};
+
+/**
+ * Minimum acceptable Argon2id cost parameters. Anything below this floor is
+ * rejected with a `WEAK_KDF_PARAMS` error.
+ */
+export const KDF_FLOOR: Readonly<KdfCostParams> = Object.freeze({
+  memory: 19 * 1024, // 19 MiB (OWASP minimum)
+  iterations: 2,
+  parallelism: 1,
+});
+
+/**
+ * Legacy (v1) Argon2id defaults. v1 envelopes stored `memoryKiB` instead of
+ * `memory`; when a legacy envelope omits cost parameters entirely we fall back
+ * to these documented values.
+ */
+export const LEGACY_ARGON2ID_PARAMS: Argon2idParams = {
+  memory: 64 * 1024, // 64 MiB
   iterations: 3,
   parallelism: 1,
   keyLength: 32,
@@ -125,6 +159,7 @@ export type KeystoreErrorCode =
   | 'UNSUPPORTED_KDF'
   | 'UNSUPPORTED_CIPHER'
   | 'INVALID_KDF_PARAMS'
+  | 'WEAK_KDF_PARAMS'
   | 'DECRYPTION_FAILED'
   | 'CRYPTO_UNAVAILABLE';
 
@@ -184,7 +219,7 @@ async function deriveArgon2id(
     salt,
     parallelism: params.parallelism,
     iterations: params.iterations,
-    memorySize: params.memoryKiB,
+    memorySize: params.memory,
     hashLength: params.keyLength,
     outputType: 'binary',
   });
@@ -238,6 +273,93 @@ async function importAesKey(rawKey: Uint8Array): Promise<CryptoKey> {
 }
 
 // ---------------------------------------------------------------------------
+// KDF parameter validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate Argon2id cost parameters against {@link KDF_FLOOR}.
+ *
+ * @param params Candidate cost parameters.
+ * @throws {KeystoreError} With code `WEAK_KDF_PARAMS` when any value is below
+ *         the floor, or `INVALID_KDF_PARAMS` when a value is not a positive
+ *         integer.
+ */
+export function validateKdfParams(params: KdfCostParams): void {
+  if (typeof params !== 'object' || params === null) {
+    throw new KeystoreError('Missing or invalid kdf parameters', 'INVALID_KDF_PARAMS');
+  }
+
+  const { memory, iterations, parallelism } = params;
+
+  if (
+    !Number.isInteger(memory) ||
+    !Number.isInteger(iterations) ||
+    !Number.isInteger(parallelism) ||
+    memory <= 0 ||
+    iterations <= 0 ||
+    parallelism <= 0
+  ) {
+    throw new KeystoreError('Invalid Argon2id parameters', 'INVALID_KDF_PARAMS');
+  }
+
+  if (
+    memory < KDF_FLOOR.memory ||
+    iterations < KDF_FLOOR.iterations ||
+    parallelism < KDF_FLOOR.parallelism
+  ) {
+    throw new KeystoreError(
+      `Argon2id parameters below floor (memory >= ${KDF_FLOOR.memory} KiB, ` +
+        `iterations >= ${KDF_FLOOR.iterations}, parallelism >= ${KDF_FLOOR.parallelism})`,
+      'WEAK_KDF_PARAMS',
+    );
+  }
+}
+
+/**
+ * Normalize raw (possibly legacy) Argon2id parameters into the current shape.
+ *
+ * Legacy v1 envelopes stored `memoryKiB`; v2 stores `memory`. Missing cost
+ * parameters fall back to {@link LEGACY_ARGON2ID_PARAMS}.
+ */
+function normalizeArgon2idParams(raw: Record<string, unknown>): Argon2idParams {
+  const memory =
+    typeof raw.memory === 'number'
+      ? raw.memory
+      : typeof raw.memoryKiB === 'number'
+        ? raw.memoryKiB
+        : LEGACY_ARGON2ID_PARAMS.memory;
+  const iterations =
+    typeof raw.iterations === 'number'
+      ? raw.iterations
+      : LEGACY_ARGON2ID_PARAMS.iterations;
+  const parallelism =
+    typeof raw.parallelism === 'number'
+      ? raw.parallelism
+      : LEGACY_ARGON2ID_PARAMS.parallelism;
+  const keyLength =
+    typeof raw.keyLength === 'number' ? raw.keyLength : LEGACY_ARGON2ID_PARAMS.keyLength;
+
+  return { memory, iterations, parallelism, keyLength };
+}
+
+/** Returns true when the envelope is not already at the current version/params. */
+function needsUpgrade(envelope: KeystoreEnvelope): boolean {
+  if (envelope.version !== KEYSTORE_VERSION) {
+    return true;
+  }
+  if (envelope.kdf === 'argon2id') {
+    const p = envelope.kdfParams as Argon2idParams;
+    return (
+      p.memory < DEFAULT_ARGON2ID_PARAMS.memory ||
+      p.iterations < DEFAULT_ARGON2ID_PARAMS.iterations ||
+      p.parallelism < DEFAULT_ARGON2ID_PARAMS.parallelism
+    );
+  }
+  const p = envelope.kdfParams as Pbkdf2Params;
+  return p.iterations < DEFAULT_PBKDF2_PARAMS.iterations;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -278,7 +400,9 @@ export async function encryptKeypair(
         'UNSUPPORTED_KDF',
       );
     }
-    kdfParams = { ...DEFAULT_ARGON2ID_PARAMS, ...(opts.argon2id ?? {}) };
+    const merged: Argon2idParams = { ...DEFAULT_ARGON2ID_PARAMS, ...(opts.argon2id ?? {}) };
+    validateKdfParams(merged);
+    kdfParams = merged;
   } else {
     const merged = { ...DEFAULT_PBKDF2_PARAMS, ...(opts.pbkdf2 ?? {}) };
     if (merged.iterations < MIN_PBKDF2_ITERATIONS) {
@@ -337,6 +461,24 @@ export async function decryptKeypair(
   envelope: KeystoreEnvelope,
   passphrase: string,
 ): Promise<string> {
+  const { secret } = await decryptKeypairWithUpgrade(envelope, passphrase);
+  return secret;
+}
+
+/**
+ * Decrypt a keystore envelope and, when it is an older version or uses weaker
+ * than current default parameters, transparently re-encrypt it with the
+ * current defaults.
+ *
+ * @param envelope   The keystore envelope to decrypt.
+ * @param passphrase User-supplied passphrase.
+ * @returns The decrypted secret and an upgraded envelope (or the original
+ *          envelope when no upgrade was necessary).
+ */
+export async function decryptKeypairWithUpgrade(
+  envelope: KeystoreEnvelope,
+  passphrase: string,
+): Promise<{ secret: string; envelope: KeystoreEnvelope; upgraded: boolean }> {
   validateEnvelope(envelope);
 
   if (typeof passphrase !== 'string' || passphrase.length === 0) {
@@ -373,7 +515,33 @@ export async function decryptKeypair(
     );
   }
 
-  return utf8Decode(new Uint8Array(plaintextBuf));
+  const secret = utf8Decode(new Uint8Array(plaintextBuf));
+
+  if (!needsUpgrade(envelope)) {
+    return { secret, envelope, upgraded: false };
+  }
+
+  const upgradedEnvelope = await encryptKeypair(secret, passphrase, {
+    publicKey: envelope.publicKey,
+    createdAt: envelope.createdAt,
+  });
+
+  return { secret, envelope: upgradedEnvelope, upgraded: true };
+}
+
+/**
+ * Re-encrypt an existing envelope with the current default KDF parameters.
+ *
+ * @param envelope   The keystore envelope to upgrade.
+ * @param passphrase User-supplied passphrase.
+ * @returns The upgraded envelope (or the original when already current).
+ */
+export async function upgradeKeystore(
+  envelope: KeystoreEnvelope,
+  passphrase: string,
+): Promise<KeystoreEnvelope> {
+  const { envelope: upgraded } = await decryptKeypairWithUpgrade(envelope, passphrase);
+  return upgraded;
 }
 
 /** Decrypts a versioned keystore envelope to its original secret. */
@@ -419,6 +587,22 @@ export function exportKeystore(envelope: KeystoreEnvelope): string {
  *         passphrase.
  */
 export async function importKeystore(json: string, passphrase: string): Promise<string> {
+  const { secret } = await importKeystoreWithUpgrade(json, passphrase);
+  return secret;
+}
+
+/**
+ * Import a keystore from a JSON string, decrypt it, and return an upgraded
+ * envelope when the source was an older version or used weaker parameters.
+ *
+ * @param json       The JSON keystore string.
+ * @param passphrase User-supplied passphrase.
+ * @returns The decrypted secret and the (possibly upgraded) envelope.
+ */
+export async function importKeystoreWithUpgrade(
+  json: string,
+  passphrase: string,
+): Promise<{ secret: string; envelope: KeystoreEnvelope; upgraded: boolean }> {
   if (typeof json !== 'string' || json.trim().length === 0) {
     throw new KeystoreError('Keystore JSON must be a non-empty string', 'INVALID_ENVELOPE');
   }
@@ -437,7 +621,7 @@ export async function importKeystore(json: string, passphrase: string): Promise<
   const envelope = parsed as KeystoreEnvelope;
   validateEnvelope(envelope);
 
-  return decryptKeypair(envelope, passphrase);
+  return decryptKeypairWithUpgrade(envelope, passphrase);
 }
 
 // ---------------------------------------------------------------------------
@@ -455,7 +639,7 @@ function validateEnvelope(envelope: unknown): asserts envelope is KeystoreEnvelo
 
   const env = envelope as Record<string, unknown>;
 
-  if (env.version !== KEYSTORE_VERSION) {
+  if (env.version !== KEYSTORE_VERSION && env.version !== LEGACY_KEYSTORE_VERSION) {
     throw new KeystoreError(
       `Unsupported keystore version: ${String(env.version)}`,
       'UNSUPPORTED_VERSION',
@@ -500,18 +684,14 @@ function validateEnvelope(envelope: unknown): asserts envelope is KeystoreEnvelo
   const p = params as Record<string, unknown>;
 
   if (env.kdf === 'argon2id') {
-    if (
-      typeof p.memoryKiB !== 'number' ||
-      p.memoryKiB <= 0 ||
-      typeof p.iterations !== 'number' ||
-      p.iterations <= 0 ||
-      typeof p.parallelism !== 'number' ||
-      p.parallelism <= 0 ||
-      typeof p.keyLength !== 'number' ||
-      p.keyLength !== 32
-    ) {
+    const normalized = normalizeArgon2idParams(p);
+    if (normalized.keyLength !== 32) {
       throw new KeystoreError('Invalid Argon2id parameters', 'INVALID_KDF_PARAMS');
     }
+    validateKdfParams(normalized);
+    // Normalize legacy `memoryKiB` to `memory` in place so downstream code
+    // (derivation, upgrade checks) sees a consistent shape.
+    (env as unknown as KeystoreEnvelope).kdfParams = normalized;
   } else {
     if (
       (p.hash !== 'SHA-256' && p.hash !== 'SHA-512') ||

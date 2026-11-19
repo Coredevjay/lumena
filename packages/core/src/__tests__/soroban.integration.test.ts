@@ -10,13 +10,13 @@ import {
   Transaction,
   TransactionBuilder,
   hash,
-  nativeToScVal,
   rpc,
   xdr,
 } from "@stellar/stellar-sdk";
 import type { ScValInput } from "@lumen/types";
 import { StellarClient } from "../stellar/client.js";
 import { ContractClient } from "../soroban/client.js";
+import { sc } from "../soroban/scval.js";
 
 // Contract-to-TypeScript integration tests (#575). These run in CI against a
 // `stellar/quickstart` container with the contracts built to CONTRACT_WASM_DIR,
@@ -43,6 +43,11 @@ const deployer = Keypair.random();
 /** Passes a pre-built ScVal (vec/map) through `toScVal`, which returns ScVals unchanged. */
 function raw(value: xdr.ScVal): ScValInput {
   return value as unknown as ScValInput;
+}
+
+/** Builds an invocation argument with the typed `sc` builders. */
+function arg(value: xdr.ScVal): ScValInput {
+  return raw(value);
 }
 
 async function fundAccount(pubkey: string): Promise<void> {
@@ -139,22 +144,22 @@ describeContracts("Soroban helpers against deployed contracts", () => {
   it("registers a session key and validates calls against it", async () => {
     const sessionKey = Keypair.random().publicKey();
     await invoke(sessionKeysId, "register_session_key", [
-      { value: deployer.publicKey(), type: "address" },
-      { value: sessionKey, type: "address" },
-      { value: BigInt(Math.floor(Date.now() / 1000) + 3600), type: "u64" },
-      raw(xdr.ScVal.scvVec([new Address(paymasterId).toScVal()])),
-      raw(xdr.ScVal.scvVec([xdr.ScVal.scvSymbol("deposit")])),
-      { value: 1000n, type: "i128" },
+      arg(sc.address(deployer.publicKey())),
+      arg(sc.address(sessionKey)),
+      arg(sc.u64(BigInt(Math.floor(Date.now() / 1000) + 3600))),
+      arg(sc.vec([sc.address(paymasterId)])),
+      arg(sc.vec([sc.symbol("deposit")])),
+      arg(sc.i128(1000n)),
     ]);
 
     const allowed = await contracts.simulate({
       contractId: sessionKeysId,
       method: "validate_session_call",
       args: [
-        { value: sessionKey, type: "address" },
-        { value: paymasterId, type: "address" },
-        { value: "deposit", type: "symbol" },
-        { value: 10n, type: "i128" },
+        arg(sc.address(sessionKey)),
+        arg(sc.address(paymasterId)),
+        arg(sc.symbol("deposit")),
+        arg(sc.i128(10n)),
       ],
     });
     expect(allowed.successful).toBe(true);
@@ -164,10 +169,10 @@ describeContracts("Soroban helpers against deployed contracts", () => {
       contractId: sessionKeysId,
       method: "validate_session_call",
       args: [
-        { value: sessionKey, type: "address" },
-        { value: paymasterId, type: "address" },
-        { value: "withdraw", type: "symbol" },
-        { value: 10n, type: "i128" },
+        arg(sc.address(sessionKey)),
+        arg(sc.address(paymasterId)),
+        arg(sc.symbol("withdraw")),
+        arg(sc.i128(10n)),
       ],
     });
     expect(denied.successful).toBe(true);
@@ -176,15 +181,8 @@ describeContracts("Soroban helpers against deployed contracts", () => {
 
   it("initializes the smart account signer set", async () => {
     await invoke(smartAccountId, "init", [
-      raw(
-        xdr.ScVal.scvMap([
-          new xdr.ScMapEntry({
-            key: new Address(deployer.publicKey()).toScVal(),
-            val: nativeToScVal(1, { type: "u32" }),
-          }),
-        ]),
-      ),
-      { value: 1, type: "u32" },
+      arg(sc.map([[sc.address(deployer.publicKey()), sc.u32(1)]])),
+      arg(sc.u32(1)),
     ]);
 
     const threshold = await contracts.simulate({ contractId: smartAccountId, method: "threshold" });

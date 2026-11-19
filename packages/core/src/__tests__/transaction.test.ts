@@ -1,11 +1,12 @@
 import { Account, Asset, Keypair, Networks, Operation } from "@stellar/stellar-sdk";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildTransaction } from "../stellar/transaction.js";
 import {
   decodeUrFrames,
   encodeUrFrames,
   type UrFrame,
 } from "../stellar/airgap.js";
+import { SequenceNumberCache } from "../stellar/sequence-number-cache.js";
 
 describe("buildTransaction", () => {
   it("builds a transaction from an account with a sequence number", () => {
@@ -25,6 +26,83 @@ describe("buildTransaction", () => {
     expect(transaction.source).toBe(sourceAccount.accountId());
     expect(transaction.operations).toHaveLength(1);
     expect(sourceAccount.sequenceNumber()).toBe("8");
+  });
+});
+
+describe("SequenceNumberCache", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("invalidates a stale entry and refetches after tx_bad_seq", async () => {
+    const cache = new SequenceNumberCache();
+    const account = Keypair.random().publicKey();
+    const fetchSequence = vi
+      .fn<[], Promise<string>>()
+      .mockResolvedValueOnce("7")
+      .mockResolvedValueOnce("8");
+
+    expect(await cache.get(account, fetchSequence)).toBe("7");
+    expect(await cache.get(account, fetchSequence)).toBe("7");
+    expect(fetchSequence).toHaveBeenCalledTimes(1);
+
+    // Simulate a tx_bad_seq failure: the cached sequence is now stale.
+    cache.invalidateOnBadSeq(account);
+    expect(cache.invalidateOnBadSeq(account)).toBe(false);
+
+    expect(await cache.get(account, fetchSequence)).toBe("8");
+    expect(fetchSequence).toHaveBeenCalledTimes(2);
+  });
+
+  it("expires entries after the configured ttlMs", async () => {
+    vi.useFakeTimers();
+    const cache = new SequenceNumberCache({ ttlMs: 1000 });
+    const account = Keypair.random().publicKey();
+    const fetchSequence = vi.fn<[], Promise<string>>().mockResolvedValue("7");
+
+    expect(await cache.get(account, fetchSequence)).toBe("7");
+    expect(await cache.get(account, fetchSequence)).toBe("7");
+    expect(fetchSequence).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(1001);
+
+    expect(cache.get(account, fetchSequence)).toBeNull();
+    expect(await cache.get(account, fetchSequence)).toBe("7");
+    expect(fetchSequence).toHaveBeenCalledTimes(2);
+  });
+
+  it("fires metrics hooks on hit, miss, invalidate and expire", async () => {
+    vi.useFakeTimers();
+    const onHit = vi.fn();
+    const onMiss = vi.fn();
+    const onInvalidate = vi.fn();
+    const onExpire = vi.fn();
+    const cache = new SequenceNumberCache({
+      ttlMs: 1000,
+      metrics: { onHit, onMiss, onInvalidate, onExpire },
+    });
+    const account = Keypair.random().publicKey();
+    const fetchSequence = vi.fn<[], Promise<string>>().mockResolvedValue("7");
+
+    // Miss then hit.
+    expect(await cache.get(account, fetchSequence)).toBe("7");
+    expect(onMiss).toHaveBeenCalledTimes(1);
+    expect(onHit).not.toHaveBeenCalled();
+
+    expect(await cache.get(account, fetchSequence)).toBe("7");
+    expect(onHit).toHaveBeenCalledTimes(1);
+
+    // Explicit invalidation.
+    expect(cache.invalidate(account)).toBe(true);
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+    expect(onInvalidate).toHaveBeenCalledWith(account);
+
+    // Expiry.
+    expect(await cache.get(account, fetchSequence)).toBe("7");
+    vi.advanceTimersByTime(1001);
+    expect(cache.get(account, fetchSequence)).toBeNull();
+    expect(onExpire).toHaveBeenCalledTimes(1);
+    expect(onExpire).toHaveBeenCalledWith(account);
   });
 });
 

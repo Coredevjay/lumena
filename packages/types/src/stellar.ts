@@ -78,27 +78,11 @@ export interface TransactionResult {
 }
 
 /**
- * Configuration for connecting to a Stellar network.
- *
- * @example
- * ```ts
- * const config: StellarConfig = {
- *   network: "testnet",
- *   horizonUrl: "https://horizon-testnet.stellar.org",
- *   rpcUrl: "https://soroban-testnet.stellar.org",
- *   networkPassphrase: "Test SDF Network ; September 2015",
- * };
- * ```
+ * Network configuration describing the endpoints and passphrase for a
+ * Stellar network. This is the canonical shape reused by the core
+ * `networks.ts` module and downstream packages.
  */
-export interface StellarConfig {
-  /**
-   * The Stellar network to connect to.
-   *
-   * @example
-   * ```ts
-   * const network: StellarNetwork = "mainnet";
-   * ```
-   */
+export interface NetworkConfig {
   network: StellarNetwork;
 
   /**
@@ -131,3 +115,10 @@ export interface StellarConfig {
    */
   networkPassphrase: string;
 }
+
+/**
+ * Stellar configuration. Kept structurally compatible with
+ * `NetworkConfig` so downstream packages can import either type from
+ * `@lumen/types`.
+ */
+export interface StellarConfig extends NetworkConfig {}

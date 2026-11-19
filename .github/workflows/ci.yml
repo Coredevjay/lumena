@@ -120,3 +120,52 @@ jobs:
                 body,
               });
             }
+
+  load-smoke:
+    # Short k6 smoke load against /health and /cosign. p95 latency and
+    # error-rate thresholds are defined in packages/server/__tests__/load/smoke.js
+    # and documented in packages/server/README.md; a breach fails this job.
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Start server
+        working-directory: packages/server
+        run: |
+          COSIGNER_SECRET=$(node --input-type=module -e "import { Keypair } from '@stellar/stellar-sdk'; console.log(Keypair.random().secret())")
+          FEE_PAYER_SECRET=$(node --input-type=module -e "import { Keypair } from '@stellar/stellar-sdk'; console.log(Keypair.random().secret())")
+          export COSIGNER_SECRET FEE_PAYER_SECRET RATE_LIMIT_MAX=1000000 PORT=3000
+          nohup node dist/main.js > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000/health > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Server did not become healthy"
+          cat server.log
+          exit 1
+
+      - name: Setup k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Run smoke load test
+        run: k6 run packages/server/__tests__/load/smoke.js

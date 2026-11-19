@@ -21,6 +21,30 @@ The CI workflow triggers on:
 7. **Build Packages**: Compiles TypeScript across all workspace packages via Turborepo (`pnpm build`).
 8. **Unit Tests**: Runs Vitest test suites across all packages (`pnpm test`).
 
+### Schema Snapshots
+
+The generated OpenAPI spec (`packages/server/src/openapi.ts`) and the policy JSON
+schema (derived from `PolicyRequestSchema` in `packages/server/src/validation.ts`)
+are snapshotted in `packages/server/src/__tests__/__snapshots__/`. Any change to
+either schema fails the `schema-snapshots` test in CI until the snapshots are
+updated explicitly.
+
+To update the snapshots after an intentional schema change:
+
+1. Regenerate them:
+   ```
+   pnpm --filter "@lumen/server" exec vitest run src/__tests__/schema-snapshots.test.ts -u
+   ```
+2. Review the snapshot diff for breaking changes (removed paths, fields, enum
+   values or newly required properties).
+3. Add a changeset describing the change, using a `major` bump for breaking changes:
+   ```
+   pnpm changeset
+   ```
+4. Commit the updated snapshots together with the changeset.
+
+On pull requests, CI fails if the snapshots change without a new `.changeset/*.md` file.
+
 ### Contracts (`.github/workflows/contracts.yml`)
 
 The Contracts workflow validates Soroban smart contracts. It triggers on:

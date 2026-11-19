@@ -13,6 +13,20 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Require changeset for schema snapshot changes
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          if echo "$changed" | grep -q '^packages/server/src/__tests__/__snapshots__/'; then
+            if ! echo "$changed" | grep -Eq '^\.changeset/.+\.md$'; then
+              echo "::error::OpenAPI/policy schema snapshots changed. Add a changeset (pnpm changeset) describing the schema change."
+              exit 1
+            fi
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

@@ -56,7 +56,7 @@ export {
   type HdDerivedAccount,
   type HdWalletOpts,
 } from "./keys/hd-wallet.js";
-export { Wallet } from "./wallet/wallet.js";
+export { Wallet, type SendOpts } from "./wallet/wallet.js";
 export { Sep41Token } from "./stellar/sep41.js";
 export {
   buildTimeBounds,

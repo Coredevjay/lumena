@@ -14,12 +14,13 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function createWallet(serverUrl?: string) {
+function createWallet(serverUrl?: string, destinationData: Record<string, string> = {}) {
   const ownerKeypair = Keypair.random();
   const submitTransaction = vi.fn();
+  const loadAccount = vi.fn().mockResolvedValue({ data_attr: destinationData });
   const wallet = new Wallet({
     client: {
-      horizon: { submitTransaction },
+      horizon: { submitTransaction, loadAccount },
     } as unknown as StellarClient,
     sponsorKeypair: Keypair.random(),
     serverPublicKey: Keypair.random().publicKey(),
@@ -28,7 +29,20 @@ function createWallet(serverUrl?: string) {
   });
   Object.defineProperty(wallet, "_address", { value: ownerKeypair.publicKey() });
   vi.spyOn(wallet, "buildPaymentTransaction").mockResolvedValue("owner-signed-xdr");
-  return { wallet, submitTransaction, ownerKeypair };
+  return { wallet, submitTransaction, loadAccount, ownerKeypair };
+}
+
+function mockSuccessfulFetch() {
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ signedXdr: "cosigned-xdr" }), { status: 200 }),
+    )
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ hash: "fee-bump-hash" }), { status: 200 }),
+    );
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
 }
 
 describe("Wallet.send", () => {
@@ -93,6 +107,63 @@ describe("Wallet.send", () => {
       "1",
       memo,
     );
+  });
+});
+
+describe("Wallet.send SEP-0029 memo-required check", () => {
+  const memoRequired = { "config.memo_required": "MQ==" };
+
+  it("blocks sends without a memo when the destination requires one", async () => {
+    const { wallet, loadAccount } = createWallet("https://lumen.example/", memoRequired);
+    const fetchMock = mockSuccessfulFetch();
+    const destination = Keypair.random().publicKey();
+
+    await expect(wallet.send(destination, Asset.native(), "1")).rejects.toThrow(
+      "requires a memo (SEP-0029)",
+    );
+    expect(loadAccount).toHaveBeenCalledWith(destination);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("allows sends with a memo when the destination requires one", async () => {
+    const { wallet, loadAccount } = createWallet("https://lumen.example/", memoRequired);
+    mockSuccessfulFetch();
+
+    await expect(
+      wallet.send(Keypair.random().publicKey(), Asset.native(), "1", Memo.id("42")),
+    ).resolves.toEqual({ hash: "fee-bump-hash" });
+    expect(loadAccount).not.toHaveBeenCalled();
+  });
+
+  it("treats Memo.none as a missing memo", async () => {
+    const { wallet } = createWallet("https://lumen.example/", memoRequired);
+    mockSuccessfulFetch();
+
+    await expect(
+      wallet.send(Keypair.random().publicKey(), Asset.native(), "1", Memo.none()),
+    ).rejects.toThrow("requires a memo (SEP-0029)");
+  });
+
+  it("allows the check to be overridden explicitly", async () => {
+    const { wallet, loadAccount } = createWallet("https://lumen.example/", memoRequired);
+    mockSuccessfulFetch();
+
+    await expect(
+      wallet.send(Keypair.random().publicKey(), Asset.native(), "1", undefined, {
+        skipMemoRequiredCheck: true,
+      }),
+    ).resolves.toEqual({ hash: "fee-bump-hash" });
+    expect(loadAccount).not.toHaveBeenCalled();
+  });
+
+  it("does not require a memo for destinations that do not exist yet", async () => {
+    const { wallet, loadAccount } = createWallet("https://lumen.example/");
+    loadAccount.mockRejectedValueOnce({ response: { status: 404 } });
+    mockSuccessfulFetch();
+
+    await expect(wallet.send(Keypair.random().publicKey(), Asset.native(), "1")).resolves.toEqual({
+      hash: "fee-bump-hash",
+    });
   });
 });
 

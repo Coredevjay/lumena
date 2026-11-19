@@ -46,6 +46,15 @@ export interface CrossContractValidationResult {
   rejectedTargets: string[];
 }
 
+/** Options for `Wallet.send`. */
+export interface SendOpts {
+  /**
+   * Skip the SEP-0029 memo-required check. Only set this when you are certain
+   * the destination does not need a memo.
+   */
+  skipMemoRequiredCheck?: boolean;
+}
+
 /** Result of a USD spend-limit check performed via the oracle consumer contract. */
 export interface UsdSpendLimitResult {
   /** Whether the spend is within the configured USD limit. */
@@ -181,10 +190,19 @@ export class Wallet {
     asset: Asset,
     amount: string,
     memo?: Memo | string,
+    opts: SendOpts = {},
   ): Promise<{ hash: string }> {
     if (!this._keypair) throw new Error("Wallet not initialized");
     if (!this.serverUrl) {
       throw new Error("A Lumen server URL is required to send payments through policy enforcement");
+    }
+
+    const hasMemo = memo !== undefined && !(typeof memo !== "string" && memo.type === "none");
+    if (!hasMemo && !opts.skipMemoRequiredCheck && (await this.checkMemoRequired(destination))) {
+      throw new Error(
+        `Destination ${destination} requires a memo (SEP-0029). ` +
+          "Provide a memo or pass { skipMemoRequiredCheck: true } to override.",
+      );
     }
 
     const signedXdr = await this.buildPaymentTransaction(destination, asset, amount, memo);
@@ -236,6 +254,26 @@ export class Wallet {
 
     this.recordTransaction(asset, amount);
     return { hash: submitResult.hash };
+  }
+
+  /**
+   * Checks whether the destination account has opted in to SEP-0029 by setting
+   * the `config.memo_required` data entry to `1`. Muxed (M...) destinations and
+   * accounts that do not exist yet never require a memo.
+   */
+  async checkMemoRequired(destination: string): Promise<boolean> {
+    if (destination.startsWith("M")) return false;
+
+    let account: { data_attr?: Record<string, string> };
+    try {
+      account = await this.client.horizon.loadAccount(destination);
+    } catch (error) {
+      if ((error as any)?.response?.status === 404) return false;
+      throw error;
+    }
+
+    // Horizon returns data entry values base64-encoded; "MQ==" is "1".
+    return account.data_attr?.["config.memo_required"] === "MQ==";
   }
 
   async buildPaymentTransaction(

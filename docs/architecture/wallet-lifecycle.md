@@ -7,6 +7,19 @@ Lumena wallets move through four operational states:
 3. Protected: multisig is configured so the server co-signer enforces policy.
 4. Active: payments, contract calls, and sponsored fee-bump submissions are available.
 
+```mermaid
+stateDiagram-v2
+  [*] --> Generated: keypair or passkey created
+  Generated --> Sponsored: sponsor funds account
+  Sponsored --> Protected: multisig configured
+  Protected --> Active: policy enforced by co-signer
+  Active --> Recovering: key lost, recovery initiated
+  Recovering --> Active: guardians approve, timelock elapses, key rotated
+  Recovering --> Active: owner cancels during grace period
+  Active --> Retired: policy removed, account merged
+  Retired --> [*]
+```
+
 Recovery and closure should keep policy in sync with on-chain state. When a wallet is retired, remove stored policy, stop sponsor monitoring for the account, and use account merge only after balances, trustlines, and claimable balances are cleared.
 
 ## Social Recovery
@@ -25,6 +38,22 @@ Guardian registration and threshold/timelock configuration are owner-controlled 
 ### Recovery Initiation
 
 When the owner loses access to their key, a recovery is initiated against the wallet, proposing a new key (key rotation target). Initiation opens a recovery proposal that guardians can vote on.
+
+```mermaid
+sequenceDiagram
+  participant O as Owner
+  participant G as Guardians (M of N)
+  participant R as Social Recovery contract
+  O->>R: register guardians, threshold, timelock
+  O->>R: initiate recovery (new key)
+  G->>R: vote approve
+  Note over R: threshold reached, timelock starts
+  alt owner cancels during grace period
+    O->>R: cancel
+  else timelock elapsed
+    R->>R: execute key rotation
+  end
+```
 
 ### Guardian Voting
 

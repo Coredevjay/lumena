@@ -41,6 +41,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Diff OpenAPI spec against previous release
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          if [ -z "$PREV_TAG" ] || ! git cat-file -e "$PREV_TAG:docs/openapi.yaml" 2>/dev/null; then
+            echo "No previous release spec found; skipping OpenAPI diff"
+            exit 0
+          fi
+          mkdir -p /tmp/oasdiff
+          git show "$PREV_TAG:docs/openapi.yaml" > /tmp/oasdiff/base.yaml
+          cp docs/openapi.yaml /tmp/oasdiff/revision.yaml
+          docker run --rm -v /tmp/oasdiff:/specs tufin/oasdiff changelog /specs/base.yaml /specs/revision.yaml > /tmp/oasdiff/changelog.md
+          if [ -s /tmp/oasdiff/changelog.md ]; then
+            {
+              echo ""
+              echo "## Unreleased (changes since $PREV_TAG)"
+              echo ""
+              cat /tmp/oasdiff/changelog.md
+            } >> docs/api-changelog.md
+          fi
+
       - name: Create Release Pull Request or Publish to npm
         id: changesets
         uses: changesets/action@v1

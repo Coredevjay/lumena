@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { openApiSpec } from "../openapi.js";
 
 describe("OpenAPI Specification", () => {
@@ -32,5 +34,14 @@ describe("OpenAPI Specification", () => {
   it("defines bearerAuth security scheme and security requirement", () => {
     expect(openApiSpec.components.securitySchemes).toHaveProperty("bearerAuth");
     expect(openApiSpec.security).toContainEqual({ bearerAuth: [] });
+  });
+
+  it("matches the published docs/openapi.yaml version", () => {
+    const yaml = readFileSync(
+      fileURLToPath(new URL("../../../../docs/openapi.yaml", import.meta.url)),
+      "utf8",
+    );
+    expect(yaml.match(/^openapi:\s*(\S+)/m)?.[1]).toBe(openApiSpec.openapi);
+    expect(yaml.match(/^  version:\s*(\S+)/m)?.[1]).toBe(openApiSpec.info.version);
   });
 });

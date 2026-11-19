@@ -315,6 +315,56 @@ webhookCmd
     }
   });
 
+const sponsorCmd = program.command("sponsor").description("Inspect the sponsor account");
+
+sponsorCmd
+  .command("reserves")
+  .description("Reports base reserves the sponsor has locked up per wallet")
+  .option("-s, --server <url>", "Lumen server URL", DEFAULT_SERVER_URL)
+  .option("-w, --wallet <address...>", "Limit the report to these wallet addresses")
+  .action(async (options) => {
+    try {
+      const params = new URLSearchParams();
+      for (const address of (options.wallet as string[] | undefined) ?? []) {
+        params.append("wallet", address);
+      }
+      const query = params.toString();
+      const res = await fetch(`${options.server}/sponsor/reserves${query ? `?${query}` : ""}`);
+      if (!res.ok) {
+        throw new Error(`Failed to fetch sponsor reserves: HTTP ${res.status}`);
+      }
+
+      const report = await res.json();
+      if (isJsonOutput()) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(`Sponsor: ${report.sponsor}`);
+        console.log(
+          `Horizon num_sponsoring: ${report.numSponsoring} | tracked: ${report.trackedReserves} | untracked: ${report.untrackedReserves}`,
+        );
+        console.log(`Locked: ${report.lockedXlm} XLM (base reserve ${report.baseReserveXlm} XLM)`);
+        console.table(
+          report.wallets.map((w: any) => ({
+            wallet: w.address,
+            account: w.accountSponsored ? 2 : 0,
+            trustlines: w.trustlines,
+            signers: w.signers,
+            data: w.dataEntries,
+            reserves: w.reserves,
+            lockedXlm: w.lockedXlm,
+          })),
+        );
+      }
+    } catch (err: any) {
+      if (isJsonOutput()) {
+        console.error(JSON.stringify({ error: err.message || String(err) }));
+      } else {
+        console.error("Error fetching sponsor reserves:", err.message || err);
+      }
+      process.exit(1);
+    }
+  });
+
 const walletCmd = program.command("wallet").description("Manage test sponsored wallets");
 
 walletCmd

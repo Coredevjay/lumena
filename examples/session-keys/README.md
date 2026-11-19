@@ -1,5 +1,7 @@
 # Lumen Session Keys Demo
 
+## Overview
+
 An interactive **Vite + React** application demonstrating Lumen's **session key** pattern — enabling instant micropayments and rapid actions without displaying a wallet signing prompt for every transaction.
 
 ---
@@ -33,12 +35,15 @@ For a detailed walkthrough see [docs/guides/gasless-transactions.md](../../docs/
 
 ---
 
-## 🚀 Quickstart
-
-### Prerequisites
+## Prerequisites
 
 - Node.js 20+
 - pnpm
+- A running `@lumen/server` (see below).
+
+---
+
+## Install and run
 
 ### 1. Start `@lumen/server`
 
@@ -65,6 +70,21 @@ Navigate to **`http://localhost:5174`** in your browser.
 3. **Send instant micropayments** — click "⚡ Tip 0.1 XLM" repeatedly. Each tap sends 0.1 XLM with no signing prompt. Watch the spend allowance bar fill up.
 4. **Observe expiry** — the countdown timer shows remaining session validity. The key expires automatically after 5 minutes.
 5. **Revoke manually** — click "Revoke Session Key" to invalidate the session key before it expires.
+
+---
+
+## Expected output
+
+The event log records session creation, each 0.1 XLM payment, and revocation or
+expiry. The spend allowance bar fills toward the 10 XLM cap, and payments are
+refused once the cap is reached or the session key has expired or been revoked.
+
+---
+
+## Screenshots
+
+A dark-mode page with wallet and session key controls, the "⚡ Tip 0.1 XLM"
+button, the spend allowance bar, the countdown timer, and the event log panel.
 
 ---
 

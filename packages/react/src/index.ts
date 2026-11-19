@@ -152,6 +152,19 @@ export type {
   LumenQrScanResultType,
 } from "./components/LumenQrScanner.js";
 
+// #590 — Receive card with SEP-0007 QR code and copy button
+export { LumenReceive, buildSep7PayUri } from "./components/LumenReceive.js";
+export type { LumenReceiveProps, Sep7PayParams } from "./components/LumenReceive.js";
+
+// #589 — Prebuilt send form with federation/muxed support and review step
+export { LumenSendForm, isFederationAddress } from "./components/LumenSendForm.js";
+export type {
+  LumenSendFormProps,
+  LumenSendFormValues,
+  LumenSendMemoType,
+  LumenFederationRecord,
+} from "./components/LumenSendForm.js";
+
 // #276 — Error boundary with sanitized diagnostics export
 export { LumenErrorBoundary } from "./components/LumenErrorBoundary.js";
 export type {

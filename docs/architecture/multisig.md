@@ -8,6 +8,20 @@ Every Lumen user wallet is an on-chain 2-of-2 multisig account:
 
 Neither party can unilaterally drain funds.
 
+```mermaid
+C4Container
+  title Lumen 2-of-2 multisig - containers
+  Person(user, "User")
+  Container(passkey, "User signer", "Passkey or device key", "Weight 1")
+  Container(cosigner, "Server co-signer", "KMS / HSM", "Weight 1, enforces policy")
+  Container(proxy, "Smart account proxy", "Soroban contract", "Upgradeable via update_current_contract_wasm")
+  System_Ext(stellar, "Stellar network")
+  Rel(user, passkey, "Authorizes with")
+  Rel(passkey, proxy, "Signature 1")
+  Rel(cosigner, proxy, "Signature 2")
+  Rel(proxy, stellar, "Executes on")
+```
+
 ## Upgradeable Proxy Pattern
 
 Smart accounts are deployed behind an upgradeable proxy so that future features can be added without changing the account address or losing existing state. The proxy contract upgrades its own logic using `env.deployer().update_current_contract_wasm()`, which swaps the executing Wasm while leaving the contract ID untouched.
@@ -33,6 +47,24 @@ This guarantees that account storage, nonces, and addresses survive logic update
 Upgrades are themselves sensitive operations and must be approved by the account's multisig. An upgrade cannot be executed by a single signer.
 
 ### Approval Flow
+
+```mermaid
+sequenceDiagram
+  participant U as User signer
+  participant SV as Server signer
+  participant P as Proxy contract
+  U->>P: propose(new Wasm hash)
+  U->>P: approve(proposal)
+  SV->>P: approve(proposal)
+  Note over P: 2-of-2 approvals collected, timelock starts
+  alt veto before execution
+    SV->>P: cancel(proposal)
+  else timelock elapsed
+    U->>P: execute(proposal)
+    P->>P: update_current_contract_wasm(hash)
+    P->>P: run state migration, bump version marker
+  end
+```
 
 1. **Proposal**: A signer submits an upgrade proposal referencing the new Wasm hash. The proposal records the target hash, the proposing signer, and the time of submission.
 2. **Approval**: Signers approve the proposal by signing it. Because the account is a 2-of-2 multisig, both the user signer and the server signer must approve before the proposal becomes executable.

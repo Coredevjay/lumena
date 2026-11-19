@@ -121,6 +121,29 @@ export default defineConfig({
             content: 'Astro Starlight',
           },
         },
+        {
+          // Render ```mermaid code blocks (architecture diagrams) client-side.
+          tag: 'script',
+          attrs: { type: 'module' },
+          content: `
+            import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+            const blocks = document.querySelectorAll('pre[data-language="mermaid"]');
+            blocks.forEach((pre) => {
+              const lines = pre.querySelectorAll('.ec-line');
+              const source = lines.length
+                ? Array.from(lines, (line) => line.textContent).join('\\n')
+                : pre.textContent;
+              const diagram = document.createElement('pre');
+              diagram.className = 'mermaid';
+              diagram.textContent = source;
+              (pre.closest('.expressive-code') ?? pre).replaceWith(diagram);
+            });
+            if (blocks.length) {
+              mermaid.initialize({ startOnLoad: false });
+              await mermaid.run({ querySelector: 'pre.mermaid' });
+            }
+          `,
+        },
       ],
     }),
   ],

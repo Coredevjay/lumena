@@ -241,6 +241,117 @@ describe("Webhooks API & Server Integration", () => {
     ).toBe(true);
   });
 
+  it("lists dead-lettered deliveries via GET /webhooks/dlq with pagination", async () => {
+    const dlqEntries = Array.from({ length: 3 }, (_, i) => ({
+      deliveryId: `dlq-${i}`,
+      event: "transaction.cosigned" as const,
+      timestamp: "2026-09-25T12:00:00.000Z",
+      deliveredAt: null,
+      webhookId: `wh-${i}`,
+      url: "https://example.com/webhook",
+      success: false,
+      statusCode: 500,
+      attempts: 5,
+      error: "HTTP 500",
+      data: { index: i },
+    }));
+
+    const dlqSpy = vi
+      .spyOn(serverResult.webhookDispatcher, "getDeadLetterLog")
+      .mockResolvedValue(dlqEntries);
+
+    const res = await fetch(`${BASE_URL}/webhooks/dlq?limit=2&offset=1`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toHaveLength(2);
+    expect(body[0].deliveryId).toBe("dlq-1");
+    expect(body[1].deliveryId).toBe("dlq-2");
+    expect(dlqSpy).toHaveBeenCalled();
+
+    vi.restoreAllMocks();
+  });
+
+  it("replays a dead-lettered delivery re-signing with the current secret and auditing", async () => {
+    const originalSignature = "sha256=original-signature";
+    const replaySpy = vi
+      .spyOn(serverResult.webhookDispatcher, "replayDeadLetter")
+      .mockResolvedValue({
+        replayed: true,
+        deliveryId: "dlq-1",
+        signature: "sha256=resigned-signature",
+      });
+
+    const adminToken = signTestToken({ sub: "admin-1", roles: ["admin"] });
+    const res = await fetch(`${BASE_URL}/webhooks/dlq/dlq-1/replay`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.replayed).toBe(true);
+    expect(body.signature).toBeDefined();
+    expect(body.signature).not.toBe(originalSignature);
+    expect(replaySpy).toHaveBeenCalledWith("dlq-1");
+
+    const auditEntries = serverResult.auditLogger.getEntries();
+    expect(
+      auditEntries.some(
+        (e) =>
+          e.action === "webhooks.dlq.replay" &&
+          e.outcome === "allowed" &&
+          e.actorId === "admin-1",
+      ),
+    ).toBe(true);
+
+    vi.restoreAllMocks();
+  });
+
+  it("returns 404 when replaying an unknown dead-lettered delivery", async () => {
+    vi.spyOn(serverResult.webhookDispatcher, "replayDeadLetter").mockResolvedValue({
+      replayed: false,
+      deliveryId: "missing",
+    });
+
+    const adminToken = signTestToken({ sub: "admin-1", roles: ["admin"] });
+    const res = await fetch(`${BASE_URL}/webhooks/dlq/missing/replay`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+
+    expect(res.status).toBe(404);
+    vi.restoreAllMocks();
+  });
+
+  it("denies DLQ endpoints to non-admin roles and logs the attempt", async () => {
+    const auditorToken = signTestToken({ sub: "auditor-1", roles: ["auditor"] });
+    const operatorToken = signTestToken({ sub: "operator-1", roles: ["operator"] });
+
+    for (const [actorId, token] of [
+      ["auditor-1", auditorToken],
+      ["operator-1", operatorToken],
+    ] as const) {
+      const listRes = await fetch(`${BASE_URL}/webhooks/dlq`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(listRes.status).toBe(403);
+
+      const replayRes = await fetch(`${BASE_URL}/webhooks/dlq/dlq-1/replay`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(replayRes.status).toBe(403);
+    }
+
+    const auditEntries = serverResult.auditLogger.getEntries();
+    const denied = auditEntries.filter(
+      (e) => e.action === "webhooks.dlq.replay" && e.outcome === "denied",
+    );
+    expect(denied.map((e) => e.actorId)).toEqual(
+      expect.arrayContaining(["auditor-1", "operator-1"]),
+    );
+  });
+
   it("dispatches transaction.cosigned webhook event on successful cosign", async () => {
     const dispatchSpy = vi.spyOn(serverResult.webhookDispatcher, "dispatch");
 

@@ -311,4 +311,159 @@ export interface PolicyStore {
    * @returns The number of transactions within the given window.
    */
   recordVelocity(walletId: string, timestamp: number, windowMs: number): Promise<number>;
+  /**
+   * Persists an immutable snapshot of a policy version (#500).
+   *
+   * @param version - The version snapshot to store.
+   */
+  savePolicyVersion?(version: PolicyVersion): Promise<void>;
+  /**
+   * Lists all stored versions for a policy, newest first (#500).
+   *
+   * @param policyId - Identifier of the policy.
+   */
+  listPolicyVersions?(policyId: string): Promise<PolicyVersion[]>;
+  /**
+   * Returns a single stored policy version, or `null` if not found (#500).
+   *
+   * @param policyId - Identifier of the policy.
+   * @param version - Version number to fetch.
+   */
+  getPolicyVersion?(policyId: string, version: number): Promise<PolicyVersion | null>;
+  /**
+   * Rolls a policy back to a previously stored version (#500).
+   *
+   * @param policyId - Identifier of the policy.
+   * @param version - Version number to restore.
+   * @returns The restored policy, or `null` if the version does not exist.
+   */
+  rollbackPolicy?(policyId: string, version: number): Promise<Policy | null>;
+  /**
+   * Exports a policy in its serialisable form (#501).
+   *
+   * @param walletId - Wallet whose policy should be exported.
+   */
+  exportPolicy?(walletId: string): Promise<PolicyExport | null>;
+  /**
+   * Imports a serialisable policy for a wallet (#501).
+   *
+   * @param walletId - Wallet the policy should be applied to.
+   * @param data - The exported policy payload.
+   */
+  importPolicy?(walletId: string, data: PolicyExport): Promise<Policy>;
+}
+
+/**
+ * An immutable snapshot of a policy at a point in time (#500).
+ *
+ * @example
+ * ```ts
+ * const version: PolicyVersion = {
+ *   id: "polv_123",
+ *   policyId: "pol_123",
+ *   version: 2,
+ *   author: "admin@example.com",
+ *   timestamp: new Date(),
+ *   rules: [{ type: "max_operations", maxOperations: 5 }],
+ * };
+ * ```
+ */
+export interface PolicyVersion {
+  /** Unique identifier of this version snapshot. */
+  id: string;
+  /** Identifier of the policy this version belongs to. */
+  policyId: string;
+  /** Monotonically increasing version number. */
+  version: number;
+  /** Author (user or service) that produced the change. */
+  author: string;
+  /** Timestamp at which the version was created. */
+  timestamp: Date;
+  /** Rules captured in this version. */
+  rules: PolicyRule[];
+}
+
+/**
+ * Names of the built-in policy templates (#501).
+ */
+export type PolicyTemplateName = "conservative" | "payroll" | "dapp-session";
+
+/**
+ * A named, reusable policy template (#501).
+ *
+ * @example
+ * ```ts
+ * const template: PolicyTemplate = {
+ *   name: "conservative",
+ *   description: "Low limits, strict allowlists.",
+ *   rules: [{ type: "max_operations", maxOperations: 1 }],
+ * };
+ * ```
+ */
+export interface PolicyTemplate {
+  /** Template identifier. */
+  name: PolicyTemplateName;
+  /** Human-readable description of the template. */
+  description: string;
+  /** Rules the template expands to. */
+  rules: PolicyRule[];
+}
+
+/**
+ * Serialisable policy shape used by import/export (#501).
+ *
+ * Timestamps are ISO-8601 strings so the payload is valid JSON.
+ *
+ * @example
+ * ```ts
+ * const exported: PolicyExport = {
+ *   walletId: "wallet_abc",
+ *   version: 1,
+ *   rules: [{ type: "max_operations", maxOperations: 5 }],
+ *   createdAt: new Date().toISOString(),
+ * };
+ * ```
+ */
+export interface PolicyExport {
+  /** Wallet the policy applies to. */
+  walletId: string;
+  /** Version of the exported policy. */
+  version: number;
+  /** Rules contained in the exported policy. */
+  rules: PolicyRule[];
+  /** ISO-8601 creation timestamp. */
+  createdAt: string;
+}
+
+/**
+ * Result of a single rule evaluation during a dry run (#499).
+ */
+export interface DryRunRuleResult {
+  /** The rule that was evaluated. */
+  rule: PolicyRule;
+  /** Whether the rule passed. */
+  passed: boolean;
+  /** Optional human-readable explanation for the outcome. */
+  reason?: string;
+}
+
+/**
+ * Result of a dry-run policy evaluation (#499).
+ *
+ * @example
+ * ```ts
+ * const result: DryRunEvaluationResult = {
+ *   approved: false,
+ *   reason: "spend_limit exceeded",
+ *   results: [{ rule: { type: "max_operations", maxOperations: 5 }, passed: true }],
+ * };
+ * ```
+ */
+export interface DryRunEvaluationResult {
+  /** Whether the transaction would be approved. */
+  approved: boolean;
+  /** Overall reason for the decision, if any. */
+  reason?: string;
+  /** Per-rule evaluation results, including matched rules. */
+  results: DryRunRuleResult[];
 }

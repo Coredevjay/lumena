@@ -86,6 +86,184 @@ export interface PolicyEngineOptions {
   defaultPolicy?: "allow" | "deny";
 }
 
+/**
+ * Named policy templates that operators can use as a starting point when
+ * configuring a wallet policy. Each template is a list of rules that is
+ * validated against the same rule schemas used by the server's
+ * `PolicyRequestSchema`.
+ */
+export const POLICY_TEMPLATES: Record<string, PolicyRule[]> = {
+  conservative: [
+    {
+      type: "spend_limit",
+      asset: "native",
+      maxPerTx: "100",
+      maxDaily: "500",
+    } as SpendLimit,
+    {
+      type: "velocity",
+      windowMinutes: 60,
+      maxTransactions: 10,
+    } as VelocityRule,
+    {
+      type: "max_operations",
+      maxOperations: 5,
+    } as MaxOperationsRule,
+    {
+      type: "timebounds",
+      maxWindowSeconds: 300,
+      allowUnbounded: false,
+    } as TimeBoundsRule,
+  ],
+  payroll: [
+    {
+      type: "spend_limit",
+      asset: "native",
+      maxPerTx: "10000",
+      maxDaily: "50000",
+    } as SpendLimit,
+    {
+      type: "velocity",
+      windowMinutes: 1440,
+      maxTransactions: 100,
+    } as VelocityRule,
+    {
+      type: "max_operations",
+      maxOperations: 100,
+    } as MaxOperationsRule,
+  ],
+  "dapp-session": [
+    {
+      type: "velocity",
+      windowMinutes: 15,
+      maxTransactions: 20,
+    } as VelocityRule,
+    {
+      type: "max_operations",
+      maxOperations: 10,
+    } as MaxOperationsRule,
+    {
+      type: "fee_limit",
+      maxFeeStroops: 100000,
+    } as FeeLimitRule,
+  ],
+};
+
+/**
+ * Return a copy of the named template's rules, or `null` if the template does
+ * not exist.
+ */
+export function getTemplate(name: string): PolicyRule[] | null {
+  const template = POLICY_TEMPLATES[name];
+  if (!template) {
+    return null;
+  }
+  return template.map((rule) => ({ ...rule }));
+}
+
+/**
+ * Validate a list of policy rules against the rule schemas.
+ *
+ * This mirrors the validation performed by the server's `PolicyRequestSchema`
+ * so that templates and imported policies are rejected before they are stored.
+ * Returns `{ valid: true }` on success or `{ valid: false, errors }` with a
+ * list of human-readable problems.
+ */
+export function validatePolicyRules(
+  rules: unknown,
+): { valid: true } | { valid: false; errors: string[] } {
+  const errors: string[] = [];
+
+  if (!Array.isArray(rules)) {
+    return { valid: false, errors: ["rules must be an array"] };
+  }
+
+  const isFiniteNumber = (v: unknown): v is number =>
+    typeof v === "number" && Number.isFinite(v);
+  const isNonEmptyString = (v: unknown): v is string =>
+    typeof v === "string" && v.length > 0;
+  const isAmountString = (v: unknown): v is string =>
+    typeof v === "string" && v.length > 0 && !Number.isNaN(parseFloat(v));
+
+  rules.forEach((rule, index) => {
+    const prefix = `rules[${index}]`;
+    if (!rule || typeof rule !== "object") {
+      errors.push(`${prefix} must be an object`);
+      return;
+    }
+    const r = rule as Record<string, unknown>;
+    if (typeof r.type !== "string") {
+      errors.push(`${prefix}.type must be a string`);
+      return;
+    }
+
+    switch (r.type) {
+      case "spend_limit":
+        if (!isAmountString(r.maxPerTx)) {
+          errors.push(`${prefix}.maxPerTx must be a numeric string`);
+        }
+        if (!isAmountString(r.maxDaily)) {
+          errors.push(`${prefix}.maxDaily must be a numeric string`);
+        }
+        break;
+      case "velocity":
+        if (!isFiniteNumber(r.windowMinutes) || r.windowMinutes < 0) {
+          errors.push(`${prefix}.windowMinutes must be a non-negative number`);
+        }
+        if (!isFiniteNumber(r.maxTransactions) || r.maxTransactions < 0) {
+          errors.push(`${prefix}.maxTransactions must be a non-negative number`);
+        }
+        break;
+      case "allowlist":
+      case "blocklist":
+        if (!Array.isArray(r.destinations) || !r.destinations.every(isNonEmptyString)) {
+          errors.push(`${prefix}.destinations must be an array of strings`);
+        }
+        break;
+      case "asset_allowlist":
+        if (!Array.isArray(r.assets) || !r.assets.every(isNonEmptyString)) {
+          errors.push(`${prefix}.assets must be an array of strings`);
+        }
+        break;
+      case "session_key":
+        if (!isNonEmptyString(r.sessionPublicKey)) {
+          errors.push(`${prefix}.sessionPublicKey must be a string`);
+        }
+        if (!isFiniteNumber(r.expiresAt)) {
+          errors.push(`${prefix}.expiresAt must be a number`);
+        }
+        if (!isAmountString(r.maxSpend)) {
+          errors.push(`${prefix}.maxSpend must be a numeric string`);
+        }
+        break;
+      case "timebounds":
+        if (!isFiniteNumber(r.maxWindowSeconds) || r.maxWindowSeconds < 0) {
+          errors.push(`${prefix}.maxWindowSeconds must be a non-negative number`);
+        }
+        break;
+      case "max_operations":
+        if (!isFiniteNumber(r.maxOperations) || r.maxOperations < 0) {
+          errors.push(`${prefix}.maxOperations must be a non-negative number`);
+        }
+        break;
+      case "fee_limit":
+        if (!isFiniteNumber(r.maxFeeStroops) || r.maxFeeStroops < 0) {
+          errors.push(`${prefix}.maxFeeStroops must be a non-negative number`);
+        }
+        break;
+      case "contract_allowlist":
+        if (!Array.isArray(r.allowedContracts)) {
+          errors.push(`${prefix}.allowedContracts must be an array`);
+        }
+        break;
+      default:
+        errors.push(`${prefix}.type "${r.type}" is not a known rule type`);
+    }
+  });
+
+  return errors.length === 0 ? { valid: true } : { valid: false, errors };
+}
+
 export class PolicyEngine {
   private policies: Map<string, Policy> = new Map();
   private readonly defaultPolicy: "allow" | "deny";
@@ -159,7 +337,48 @@ export class PolicyEngine {
     return reason === undefined ? { approved } : { approved, reason };
   }
 
-  evaluateWithAudit(opts: EvaluateOpts): EvaluateWithAuditResult {
+  /**
+   * Evaluate a transaction against the stored policy without mutating any
+   * state (spend/velocity/session tracking) and without recording anything.
+   *
+   * This is the entry point for the dry-run endpoint
+   * (`POST /policy/:walletId/evaluate`) and the CLI `policy-simulate` command.
+   * It returns the overall decision plus the per-rule results.
+   */
+  evaluateDryRun(opts: EvaluateOpts): EvaluateWithDetailsResult {
+    try {
+      if (!opts || typeof opts !== "object") {
+        return { approved: false, reason: "Malformed evaluation options", results: [] };
+      }
+
+      const policy = this.policies.get(opts.walletAddress);
+
+      if (!policy) {
+        const approved = this.defaultPolicy === "allow";
+        return {
+          approved,
+          reason: approved
+            ? undefined
+            : `No policy found for wallet ${opts.walletAddress}`,
+          results: [],
+        };
+      }
+
+      if (!Array.isArray(policy.rules)) {
+        return { approved: false, reason: "Policy has malformed rules", results: [] };
+      }
+
+      return this.evaluateWithDetails(opts);
+    } catch (err) {
+      return {
+        approved: false,
+        reason: `Policy evaluation failed closed: ${err instanceof Error ? err.message : String(err)}`,
+        results: [],
+      };
+    }
+  }
+
+  evaluateWithAudit(opts: EvaluateOpts): EvaluateResult & { rulesEvaluated: string[] } {
     const rulesEvaluated: string[] = [];
     const trace = this.createTraceCollector(opts);
     try {
@@ -438,17 +657,48 @@ export class PolicyEngine {
     rule: PolicyRule,
     opts: EvaluateOpts,
   ): { approved: boolean; reason?: string; remaining?: RuleEvaluationResult["remaining"] } {
-    switch (rule.type) {
-      case "velocity":
-        return this.evaluateVelocityDryRun(rule as VelocityRule, opts);
-      case "spend_limit":
-        return this.evaluateSpendLimitDryRun(rule as SpendLimit, opts);
-      case "session_key":
-        return this.evaluateSessionKeyDryRun(rule as SessionKeyPolicyRule, opts);
-      default: {
-        const result = this.evaluateRule(rule, opts);
-        return { approved: result.approved, reason: result.reason };
+    try {
+      if (!rule || typeof rule !== "object" || typeof rule.type !== "string") {
+        return { approved: false, reason: "Malformed policy rule" };
       }
+
+      switch (rule.type) {
+        case "velocity":
+          return this.evaluateVelocityDryRun(rule as VelocityRule, opts);
+        case "spend_limit":
+          return this.evaluateSpendLimitDryRun(rule as SpendLimit, opts);
+        case "session_key":
+          return this.evaluateSessionKeyDryRun(rule as SessionKeyPolicyRule, opts);
+        default: {
+          // Route through the non-recording internal helpers so that no
+          // tracking state is mutated during a dry run.
+          const result = this.evaluateRuleNonRecording(rule, opts);
+          return { approved: result.approved, reason: result.reason };
+        }
+      }
+    } catch (err) {
+      return {
+        approved: false,
+        reason: `Rule evaluation failed closed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  /**
+   * Evaluate a rule using the non-recording variants of the stateful rule
+   * helpers. Used by the dry-run path for rule types that are not already
+   * handled by a dedicated dry-run helper.
+   */
+  private evaluateRuleNonRecording(rule: PolicyRule, opts: EvaluateOpts): EvaluateResult {
+    switch (rule.type) {
+      case "spend_limit":
+        return this.evaluateSpendLimitInternal(rule as SpendLimit, opts, false);
+      case "velocity":
+        return this.evaluateVelocityInternal(rule as VelocityRule, opts, false);
+      case "session_key":
+        return this.evaluateSessionKeyInternal(rule as SessionKeyPolicyRule, opts, false);
+      default:
+        return this.evaluateRule(rule, opts);
     }
   }
 
@@ -586,6 +836,14 @@ export class PolicyEngine {
 
 
   private evaluateSpendLimit(rule: SpendLimit, opts: EvaluateOpts): EvaluateResult {
+    return this.evaluateSpendLimitInternal(rule, opts, true);
+  }
+
+  private evaluateSpendLimitInternal(
+    rule: SpendLimit,
+    opts: EvaluateOpts,
+    record: boolean,
+  ): EvaluateResult {
     const { walletAddress } = opts;
     const targetAsset = this.getAssetIdentifier(rule.asset);
 
@@ -637,31 +895,31 @@ export class PolicyEngine {
       };
     }
 
+    const today = new Date().toISOString().split("T")[0];
+    const trackKey = `${today}:${targetAsset}`;
+    const existingTrack = this.spendTracking.get(walletAddress)?.get(trackKey);
+    const dailyTotal = existingTrack?.dailyTotal ?? 0;
+
+    if (dailyTotal + txAmount > maxDaily) {
+      return {
+        approved: false,
+        reason: `Daily spending ${dailyTotal + txAmount} exceeds limit ${rule.maxDaily}`,
+      };
+    }
+
+    if (!record) {
+      return { approved: true };
+    }
+
     if (!this.spendTracking.has(walletAddress)) {
       this.spendTracking.set(walletAddress, new Map());
     }
     const walletTrack = this.spendTracking.get(walletAddress)!;
-    const today = new Date().toISOString().split("T")[0];
-    const trackKey = `${today}:${targetAsset}`;
 
     if (!walletTrack.has(trackKey)) {
       walletTrack.set(trackKey, { dailyTotal: 0, txCount: 0 });
     }
     const track = walletTrack.get(trackKey)!;
-
-    if (txAmount > maxPerTx) {
-      return {
-        approved: false,
-        reason: `Transaction spending ${txAmount} exceeds per-tx limit ${rule.maxPerTx}`,
-      };
-    }
-
-    if (track.dailyTotal + txAmount > maxDaily) {
-      return {
-        approved: false,
-        reason: `Daily spending ${track.dailyTotal + txAmount} exceeds limit ${rule.maxDaily}`,
-      };
-    }
 
     track.dailyTotal += txAmount;
     track.txCount++;
@@ -696,6 +954,14 @@ export class PolicyEngine {
   }
 
   private evaluateVelocity(rule: VelocityRule, opts: EvaluateOpts): EvaluateResult {
+    return this.evaluateVelocityInternal(rule, opts, true);
+  }
+
+  private evaluateVelocityInternal(
+    rule: VelocityRule,
+    opts: EvaluateOpts,
+    record: boolean,
+  ): EvaluateResult {
     const { walletAddress } = opts;
 
     if (
@@ -706,30 +972,30 @@ export class PolicyEngine {
       return { approved: false, reason: "Velocity rule has malformed parameters" };
     }
 
-    // Initialize tracking for this wallet if needed
-    if (!this.velocityTracking.has(walletAddress)) {
-      this.velocityTracking.set(walletAddress, []);
-    }
-    const txTimes = this.velocityTracking.get(walletAddress)!;
+    const txTimes = this.velocityTracking.get(walletAddress) ?? [];
 
     // Remove timestamps outside the window
     const windowMs = rule.windowMinutes * 60 * 1000;
     const cutoff = Date.now() - windowMs;
     const recentTxs = txTimes.filter((t) => t > cutoff);
 
-    // Add current transaction timestamp
-    recentTxs.push(Date.now());
+    // The current transaction would be the (recentTxs.length + 1)-th in the window.
+    const projectedCount = recentTxs.length + 1;
 
-    // Update tracking
-    this.velocityTracking.set(walletAddress, recentTxs);
-
-    // Check if exceeding limit
-    if (recentTxs.length > rule.maxTransactions) {
+    if (projectedCount > rule.maxTransactions) {
       return {
         approved: false,
-        reason: `Too many transactions (${recentTxs.length}) in ${rule.windowMinutes}-minute window (max: ${rule.maxTransactions})`,
+        reason: `Too many transactions (${projectedCount}) in ${rule.windowMinutes}-minute window (max: ${rule.maxTransactions})`,
       };
     }
+
+    if (!record) {
+      return { approved: true };
+    }
+
+    // Add current transaction timestamp and update tracking
+    recentTxs.push(Date.now());
+    this.velocityTracking.set(walletAddress, recentTxs);
 
     return { approved: true };
   }
@@ -806,6 +1072,14 @@ export class PolicyEngine {
   }
 
   private evaluateSessionKey(rule: SessionKeyPolicyRule, opts: EvaluateOpts): EvaluateResult {
+    return this.evaluateSessionKeyInternal(rule, opts, true);
+  }
+
+  private evaluateSessionKeyInternal(
+    rule: SessionKeyPolicyRule,
+    opts: EvaluateOpts,
+    record: boolean,
+  ): EvaluateResult {
     const now = Date.now();
 
     if (!Number.isFinite(rule.expiresAt)) {
@@ -844,7 +1118,9 @@ export class PolicyEngine {
       };
     }
 
-    this.sessionSpendTracking.set(rule.sessionPublicKey, currentSpend + txAmount);
+    if (record) {
+      this.sessionSpendTracking.set(rule.sessionPublicKey, currentSpend + txAmount);
+    }
     return { approved: true };
   }
 

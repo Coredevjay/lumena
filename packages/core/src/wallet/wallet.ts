@@ -1,12 +1,20 @@
 import type { Keypair, Asset } from "@stellar/stellar-sdk";
 import { Operation, TransactionBuilder, BASE_FEE, Memo } from "@stellar/stellar-sdk";
 import type { StellarClient } from "../stellar/client.js";
-import { createSponsoredAccount } from "../stellar/account.js";
-import { setupMultisig } from "../stellar/multisig.js";
 import { KeyManager } from "../keys/manager.js";
 import { ContractClient } from "../soroban/client.js";
 import { parseResultCodes, StellarResultError } from "../stellar/result-codes.js";
 import type { ContractSimulationResult, OperationSpec, ScValInput } from "@lumen/types";
+import { LumenError, PolicyDeniedError, SignerError } from "../errors.js";
+import { createWalletAccount } from "./create.js";
+import { sendPayment, buildPaymentTransaction } from "./send.js";
+import { changeTrustline } from "./trust.js";
+import {
+  getInheritanceStatus,
+  requestProxyUpgrade,
+  sendInheritanceHeartbeat,
+  claimInheritance,
+} from "./recovery.js";
 
 export interface WalletOpts {
   client: StellarClient;
@@ -133,14 +141,17 @@ export class Wallet {
 
   /** Returns the on-chain account address after the wallet has been created. */
   get address(): string {
-    if (!this._address) throw new Error("Wallet not created yet");
+    if (!this._address) {
+      throw new LumenError("WALLET_NOT_CREATED", "Wallet not created yet");
+    }
     return this._address;
   }
 
   /** Creates, sponsors, configures multisig for, and stores the wallet account. */
   async create(): Promise<{ address: string; publicKey: string }> {
     if (!this.sponsorKeypair) {
-      throw new Error(
+      throw new SignerError(
+        "SPONSOR_KEYPAIR_REQUIRED",
         "Wallet.create() requires a sponsorKeypair. " +
           "In browser environments, use LumenClient.createWallet() which delegates " +
           "account creation to the backend server (POST /wallet/create) without " +
@@ -152,22 +163,17 @@ export class Wallet {
       this._keypair = this.keyManager.generateKeypair();
     }
 
-    await createSponsoredAccount({
+    const { address } = await createWalletAccount({
       client: this.client,
       sponsorKeypair: this.sponsorKeypair,
-      newAccountKeypair: this._keypair,
-    });
-
-    await setupMultisig({
-      client: this.client,
       accountKeypair: this._keypair,
       coSignerPublicKey: this.serverPublicKey,
     });
 
-    this._address = this._keypair.publicKey();
+    this._address = address;
     this.keyManager.store(this._keypair, "default");
 
-    return { address: this._address, publicKey: this._address };
+    return { address, publicKey: address };
   }
 
   /** Reads the wallet balance for native XLM or the provided Stellar asset. */
@@ -193,70 +199,31 @@ export class Wallet {
     memo?: Memo | string,
     opts: SendOpts = {},
   ): Promise<{ hash: string }> {
-    if (!this._keypair) throw new Error("Wallet not initialized");
+    if (!this._keypair) {
+      throw new SignerError("WALLET_NOT_INITIALIZED", "Wallet not initialized");
+    }
     if (!this.serverUrl) {
-      throw new Error("A Lumen server URL is required to send payments through policy enforcement");
-    }
-
-    const hasMemo = memo !== undefined && !(typeof memo !== "string" && memo.type === "none");
-    if (!hasMemo && !opts.skipMemoRequiredCheck && (await this.checkMemoRequired(destination))) {
-      throw new Error(
-        `Destination ${destination} requires a memo (SEP-0029). ` +
-          "Provide a memo or pass { skipMemoRequiredCheck: true } to override.",
+      throw new LumenError(
+        "SERVER_URL_REQUIRED",
+        "A Lumen server URL is required to send payments through policy enforcement",
       );
     }
 
-    const signedXdr = await this.buildPaymentTransaction(destination, asset, amount, memo);
-    const cosignResponse = await fetch(`${this.serverUrl}/cosign`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ xdr: signedXdr, walletAddress: this.address }),
+    const { hash } = await sendPayment({
+      client: this.client,
+      keypair: this._keypair,
+      address: this.address,
+      serverUrl: this.serverUrl,
+      destination,
+      asset,
+      amount,
+      memo,
+      opts,
+      toStellarResultError: (details) => this.toStellarResultError(details),
     });
-    if (!cosignResponse.ok) {
-      const details = await cosignResponse.text();
-      throw new Error(
-        `Cosign rejected with status ${cosignResponse.status}${details ? `: ${details}` : ""}`,
-      );
-    }
-
-    const cosignResult: unknown = await cosignResponse.json();
-    if (
-      typeof cosignResult !== "object" ||
-      cosignResult === null ||
-      !("signedXdr" in cosignResult) ||
-      typeof cosignResult.signedXdr !== "string" ||
-      cosignResult.signedXdr.length === 0
-    ) {
-      throw new Error("Cosign response did not contain a signed transaction");
-    }
-
-    const submitResponse = await fetch(`${this.serverUrl}/fee-bump/submit`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ xdr: cosignResult.signedXdr }),
-    });
-    if (!submitResponse.ok) {
-      const details = await submitResponse.text();
-      const resultError = this.toStellarResultError(details);
-      if (resultError) throw resultError;
-      throw new Error(
-        `Fee-bump submission failed with status ${submitResponse.status}${details ? `: ${details}` : ""}`,
-      );
-    }
-
-    const submitResult: unknown = await submitResponse.json();
-    if (
-      typeof submitResult !== "object" ||
-      submitResult === null ||
-      !("hash" in submitResult) ||
-      typeof submitResult.hash !== "string" ||
-      submitResult.hash.length === 0
-    ) {
-      throw new Error("Fee-bump response did not contain a transaction hash");
-    }
 
     this.recordTransaction(asset, amount);
-    return { hash: submitResult.hash };
+    return { hash };
   }
 
   /**
@@ -285,34 +252,27 @@ export class Wallet {
     amount: string,
     memo?: Memo | string,
   ): Promise<string> {
-    if (!this._keypair) throw new Error("Wallet not initialized");
-
-    const account = await this.client.horizon.loadAccount(this.address);
-
-    const builder = new TransactionBuilder(account, {
-      fee: BASE_FEE,
-      networkPassphrase: this.client.networkPassphrase,
-    }).addOperation(
-      Operation.payment({
-        destination,
-        asset,
-        amount,
-      }),
-    );
-
-    if (memo !== undefined) {
-      builder.addMemo(typeof memo === "string" ? Memo.text(memo) : memo);
+    if (!this._keypair) {
+      throw new SignerError("WALLET_NOT_INITIALIZED", "Wallet not initialized");
     }
 
-    const tx = builder.setTimeout(180).build();
-    tx.sign(this._keypair);
-    return tx.toXDR();
+    return buildPaymentTransaction({
+      client: this.client,
+      keypair: this._keypair,
+      address: this.address,
+      destination,
+      asset,
+      amount,
+      memo,
+    });
   }
 
   async buildTransaction(operations: OperationSpec[]): Promise<string> {
-    if (!this._keypair) throw new Error("Wallet not initialized");
+    if (!this._keypair) {
+      throw new SignerError("WALLET_NOT_INITIALIZED", "Wallet not initialized");
+    }
     if (operations.length === 0) {
-      throw new Error("At least one operation is required");
+      throw new LumenError("NO_OPERATIONS", "At least one operation is required");
     }
 
     const account = await this.client.horizon.loadAccount(this.address);
@@ -353,7 +313,10 @@ export class Wallet {
         });
       default: {
         const exhaustive: never = spec;
-        throw new Error(`Unsupported operation type: ${(exhaustive as any).type}`);
+        throw new LumenError(
+          "UNSUPPORTED_OPERATION",
+          `Unsupported operation type: ${(exhaustive as any).type}`,
+        );
       }
     }
   }
@@ -363,20 +326,17 @@ export class Wallet {
    * Pass `limit = '0'` to remove the trustline.
    */
   async changeTrust(asset: Asset, limit?: string): Promise<{ hash: string }> {
-    if (!this._keypair) throw new Error("Wallet not initialized");
+    if (!this._keypair) {
+      throw new SignerError("WALLET_NOT_INITIALIZED", "Wallet not initialized");
+    }
 
-    const account = await this.client.horizon.loadAccount(this.address);
-    const builder = new TransactionBuilder(account, {
-      fee: BASE_FEE,
-      networkPassphrase: this.client.networkPassphrase,
+    return changeTrustline({
+      client: this.client,
+      keypair: this._keypair,
+      address: this.address,
+      asset,
+      limit,
     });
-
-    builder.addOperation(Operation.changeTrust({ asset, limit }));
-    const tx = builder.setTimeout(180).build();
-    tx.sign(this._keypair);
-
-    const result = await this.client.horizon.submitTransaction(tx as any);
-    return { hash: result.hash };
   }
 
   async simulateContract(
@@ -394,7 +354,9 @@ export class Wallet {
     args?: ScValInput[],
     fee?: string,
   ): Promise<string> {
-    if (!this._keypair) throw new Error("Wallet not initialized");
+    if (!this._keypair) {
+      throw new SignerError("WALLET_NOT_INITIALIZED", "Wallet not initialized");
+    }
 
     const contractClient = new ContractClient(this.client);
     const tx = await contractClient.buildTransaction({
@@ -413,7 +375,9 @@ export class Wallet {
     args?: ScValInput[],
     fee?: string,
   ): Promise<{ hash: string }> {
-    if (!this._keypair) throw new Error("Wallet not initialized");
+    if (!this._keypair) {
+      throw new SignerError("WALLET_NOT_INITIALIZED", "Wallet not initialized");
+    }
 
     const xdr = await this.buildContractInvocationTransaction(contractId, method, args, fee);
     const parsed = TransactionBuilder.fromXDR(xdr, this.client.networkPassphrase);
@@ -424,7 +388,10 @@ export class Wallet {
       return { hash: result.hash };
     }
 
-    throw new Error(`Contract invocation failed: ${result.hash}`);
+    throw new LumenError(
+      "CONTRACT_INVOCATION_FAILED",
+      `Contract invocation failed: ${result.hash}`,
+    );
   }
 
   /**
@@ -483,7 +450,8 @@ export class Wallet {
     );
     if (!validation.allowed) {
       this.recordPolicyViolation();
-      throw new Error(
+      throw new PolicyDeniedError(
+        "CROSS_CONTRACT_TARGET_REJECTED",
         `Cross-contract invocation rejected: unregistered targets ${validation.rejectedTargets.join(", ")}`,
       );
     }
@@ -533,12 +501,11 @@ export class Wallet {
    * submits the upgrade request.
    */
   async requestProxyUpgrade(request: ProxyUpgradeRequest): Promise<{ hash: string }> {
-    return this.invokeContract(
-      request.proxyContractId,
-      "propose_upgrade",
-      [{ type: "bytes", value: request.newWasmHash }],
-      request.fee,
-    );
+    return requestProxyUpgrade({
+      invoke: (contractId, method, args, fee) =>
+        this.invokeContract(contractId, method, args, fee),
+      request,
+    });
   }
 
   /**
@@ -546,7 +513,11 @@ export class Wallet {
    * resetting the dormancy timer.
    */
   async sendInheritanceHeartbeat(inheritanceContractId: string): Promise<{ hash: string }> {
-    return this.invokeContract(inheritanceContractId, "heartbeat");
+    return sendInheritanceHeartbeat({
+      invoke: (contractId, method, args, fee) =>
+        this.invokeContract(contractId, method, args, fee),
+      inheritanceContractId,
+    });
   }
 
   /**
@@ -554,22 +525,20 @@ export class Wallet {
    * (issue #225). The contract rejects the claim while the heartbeat is active.
    */
   async claimInheritance(inheritanceContractId: string): Promise<{ hash: string }> {
-    return this.invokeContract(inheritanceContractId, "claim");
+    return claimInheritance({
+      invoke: (contractId, method, args, fee) =>
+        this.invokeContract(contractId, method, args, fee),
+      inheritanceContractId,
+    });
   }
 
   /** Reads the current inheritance vault status (issue #225). */
   async getInheritanceStatus(inheritanceContractId: string): Promise<InheritanceStatus> {
-    const contractClient = new ContractClient(this.client);
-    const simulation = await contractClient.simulate(
-      { contractId: inheritanceContractId, method: "get_status" },
-      this.address,
-    );
-
-    const parsed = this.parseInheritanceStatus(simulation);
-    if (!parsed) {
-      throw new Error("Unable to read inheritance status from contract");
-    }
-    return parsed;
+    return getInheritanceStatus({
+      client: this.client,
+      address: this.address,
+      inheritanceContractId,
+    });
   }
 
   /**
@@ -630,23 +599,6 @@ export class Wallet {
       allowed,
       usdValue: String(usdValue),
       limit: String(limit),
-    };
-  }
-
-  private parseInheritanceStatus(
-    simulation: ContractSimulationResult,
-  ): InheritanceStatus | null {
-    const result: unknown = (simulation as any)?.result;
-    if (typeof result !== "object" || result === null) return null;
-
-    const lastHeartbeat = (result as any).last_heartbeat ?? (result as any).lastHeartbeat;
-    const dormancyPeriod = (result as any).dormancy_period ?? (result as any).dormancyPeriod;
-
-    if (lastHeartbeat === undefined || dormancyPeriod === undefined) return null;
-
-    return {
-      lastHeartbeat: Number(lastHeartbeat),
-      dormancyPeriod: Number(dormancyPeriod),
     };
   }
 

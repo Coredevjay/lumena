@@ -10,6 +10,7 @@ import type {
 } from '@lumen/types';
 import type {
   PolicyStore,
+  PolicyVersion,
   WalletRegistry,
   TenantStore,
   Tenant,
@@ -74,11 +75,22 @@ interface PrismaPolicyRuleRow {
   updatedAt: Date;
 }
 
+interface PrismaPolicyVersionRow {
+  id: string;
+  policyId: string;
+  version: number;
+  snapshot: unknown;
+  author: string | null;
+  createdAt: Date;
+}
+
 interface PrismaWalletRow {
   id: string;
   address: string;
   label: string | null;
   network: string;
+  tags?: string[] | null;
+  metadata?: unknown;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -108,6 +120,7 @@ interface PrismaTenantRow {
   monthlyGasUsedXlm: string;
   quotaResetAt: Date;
   allowedDomains: unknown;
+  network: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -123,6 +136,8 @@ interface PrismaWebhookDeliveryRow {
   lastError: string | null;
   nextRetryAt: Date | null;
   deadLetteredAt: Date | null;
+  replayCount?: number | null;
+  replayedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -152,12 +167,28 @@ function mapPolicyRowToPolicy(row: PrismaPolicyRow): Policy {
   };
 }
 
+function mapPolicyVersionRowToVersion(row: PrismaPolicyVersionRow): PolicyVersion {
+  return {
+    id: row.id,
+    policyId: row.policyId,
+    version: row.version,
+    snapshot: (row.snapshot ?? {}) as Policy,
+    author: row.author ?? undefined,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
 function mapWalletRowToWallet(row: PrismaWalletRow): Wallet {
   return {
     id: row.id,
     address: row.address,
     label: row.label ?? undefined,
     network: row.network,
+    tags: Array.isArray(row.tags) ? (row.tags as string[]) : [],
+    metadata:
+      row.metadata && typeof row.metadata === 'object'
+        ? (row.metadata as Record<string, unknown>)
+        : undefined,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -195,6 +226,7 @@ function mapTenantRowToTenant(row: PrismaTenantRow): Tenant {
     allowedDomains: Array.isArray(row.allowedDomains)
       ? (row.allowedDomains as string[])
       : [],
+    network: row.network ?? undefined,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -212,6 +244,8 @@ function mapWebhookDeliveryRowToDelivery(row: PrismaWebhookDeliveryRow): Webhook
     lastError: row.lastError ?? undefined,
     nextRetryAt: row.nextRetryAt ? row.nextRetryAt.toISOString() : undefined,
     deadLetteredAt: row.deadLetteredAt ? row.deadLetteredAt.toISOString() : undefined,
+    replayCount: row.replayCount ?? 0,
+    replayedAt: row.replayedAt ? row.replayedAt.toISOString() : undefined,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -279,10 +313,21 @@ export class PrismaPolicyStore implements PolicyStore {
         });
       }
 
-      return tx.policy.findUnique({
+      const persisted = await tx.policy.findUnique({
         where: { id: policyRow.id },
         include: { rules: true },
       });
+
+      if (!persisted) {
+        throw new Error(`Failed to persist policy ${policy.id}`);
+      }
+
+      // Capture an immutable snapshot for every change so the policy can be
+      // audited and rolled back later.
+      const mapped = mapPolicyRowToPolicy(persisted as unknown as PrismaPolicyRow);
+      await this.writeVersionRow(tx, mapped, policy.updatedBy);
+
+      return persisted;
     });
 
     if (!saved) {
@@ -291,9 +336,92 @@ export class PrismaPolicyStore implements PolicyStore {
     return mapPolicyRowToPolicy(saved as unknown as PrismaPolicyRow);
   }
 
+  async savePolicyVersion(policy: Policy, author?: string): Promise<PolicyVersion> {
+    const row = await this.prisma.$transaction(async (tx) => {
+      const persisted = await tx.policy.findUnique({
+        where: { id: policy.id },
+        include: { rules: true },
+      });
+      if (!persisted) {
+        throw new Error(`Policy ${policy.id} not found`);
+      }
+      const mapped = mapPolicyRowToPolicy(persisted as unknown as PrismaPolicyRow);
+      return this.writeVersionRow(tx, mapped, author);
+    });
+    return mapPolicyVersionRowToVersion(row as unknown as PrismaPolicyVersionRow);
+  }
+
+  async listPolicyVersions(policyId: string): Promise<PolicyVersion[]> {
+    const rows = await this.prisma.policyVersion.findMany({
+      where: { policyId },
+      orderBy: { version: 'desc' },
+    });
+    return rows.map((row) =>
+      mapPolicyVersionRowToVersion(row as unknown as PrismaPolicyVersionRow),
+    );
+  }
+
+  async getPolicyVersion(policyId: string, version: number): Promise<PolicyVersion | null> {
+    const row = await this.prisma.policyVersion.findUnique({
+      where: { policyId_version: { policyId, version } },
+    });
+    return row ? mapPolicyVersionRowToVersion(row as unknown as PrismaPolicyVersionRow) : null;
+  }
+
+  async rollbackPolicy(
+    policyId: string,
+    targetVersion: number,
+    author?: string,
+  ): Promise<Policy> {
+    const target = await this.getPolicyVersion(policyId, targetVersion);
+    if (!target) {
+      throw new Error(`Policy ${policyId} version ${targetVersion} not found`);
+    }
+
+    const snapshot = target.snapshot;
+    const restored: Policy = {
+      ...snapshot,
+      id: policyId,
+      updatedAt: new Date().toISOString(),
+      updatedBy: author ?? snapshot.updatedBy,
+    };
+
+    // savePolicy writes the restored definition and records a new version row,
+    // so the rollback itself is part of the audit history.
+    return this.savePolicy(restored);
+  }
+
+  /**
+   * Inserts the next sequential version row for a policy snapshot.
+   */
+  private async writeVersionRow(
+    tx: Pick<PrismaClient, 'policyVersion'>,
+    policy: Policy,
+    author?: string,
+  ): Promise<unknown> {
+    const latest = await tx.policyVersion.findFirst({
+      where: { policyId: policy.id },
+      orderBy: { version: 'desc' },
+      select: { version: true },
+    });
+    const nextVersion = (latest?.version ?? 0) + 1;
+
+    return tx.policyVersion.create({
+      data: {
+        policyId: policy.id,
+        version: nextVersion,
+        snapshot: policy as unknown as object,
+        author: author ?? null,
+      },
+    });
+  }
+
   async deletePolicy(policyId: string): Promise<boolean> {
     try {
-      await this.prisma.policy.delete({ where: { id: policyId } });
+      await this.prisma.$transaction([
+        this.prisma.policyVersion.deleteMany({ where: { policyId } }),
+        this.prisma.policy.delete({ where: { id: policyId } }),
+      ]);
       return true;
     } catch (err: unknown) {
       if (isNotFoundError(err)) {
@@ -371,14 +499,47 @@ export class PrismaWalletRegistry implements WalletRegistry {
     return row ? mapWalletRowToWallet(row as unknown as PrismaWalletRow) : null;
   }
 
-  async getWalletByAddress(address: string): Promise<Wallet | null> {
-    const row = await this.prisma.wallet.findUnique({ where: { address } });
+  async getWalletByAddress(address: string, network?: string): Promise<Wallet | null> {
+    // Wallet addresses are only unique per network, so scope the lookup by
+    // network when one is provided to avoid mixing testnet/mainnet wallets.
+    const row = network
+      ? await this.prisma.wallet.findFirst({ where: { address, network } })
+      : await this.prisma.wallet.findUnique({ where: { address } });
     return row ? mapWalletRowToWallet(row as unknown as PrismaWalletRow) : null;
   }
 
-  async listWallets(): Promise<Wallet[]> {
-    const rows = await this.prisma.wallet.findMany({ orderBy: { createdAt: 'asc' } });
+  async listWallets(network?: string): Promise<Wallet[]> {
+    const rows = await this.prisma.wallet.findMany({
+      where: network ? { network } : undefined,
+      orderBy: { createdAt: 'asc' },
+    });
     return rows.map((row) => mapWalletRowToWallet(row as unknown as PrismaWalletRow));
+  }
+
+  /**
+   * Updates operator-managed wallet metadata (label, tags, metadata).
+   * Throws if the wallet does not exist.
+   */
+  async updateWalletMetadata(
+    address: string,
+    patch: { label?: string | null; tags?: string[]; metadata?: Record<string, unknown> | null },
+  ): Promise<Wallet> {
+    const existing = await this.prisma.wallet.findUnique({ where: { address } });
+    if (!existing) {
+      throw new Error(`Wallet not found: ${address}`);
+    }
+
+    const row = await this.prisma.wallet.update({
+      where: { address },
+      data: {
+        ...(patch.label !== undefined ? { label: patch.label ?? null } : {}),
+        ...(patch.tags !== undefined ? { tags: patch.tags } : {}),
+        ...(patch.metadata !== undefined
+          ? { metadata: patch.metadata === null ? null : (patch.metadata as object) }
+          : {}),
+      },
+    });
+    return mapWalletRowToWallet(row as unknown as PrismaWalletRow);
   }
 
   async registerWallet(wallet: Wallet): Promise<Wallet> {
@@ -435,6 +596,7 @@ export class PrismaTenantStore implements TenantStore {
         monthlyGasUsedXlm: tenant.monthlyGasUsedXlm ?? '0',
         quotaResetAt: new Date(tenant.quotaResetAt),
         allowedDomains: tenant.allowedDomains ?? [],
+        network: tenant.network ?? null,
       },
       update: {
         name: tenant.name,
@@ -442,6 +604,7 @@ export class PrismaTenantStore implements TenantStore {
         tier: tenant.tier,
         monthlyGasQuotaXlm: tenant.monthlyGasQuotaXlm,
         allowedDomains: tenant.allowedDomains ?? [],
+        network: tenant.network ?? null,
       },
     });
     return mapTenantRowToTenant(row as unknown as PrismaTenantRow);
@@ -457,8 +620,11 @@ export class PrismaTenantStore implements TenantStore {
     return row ? mapTenantRowToTenant(row as unknown as PrismaTenantRow) : null;
   }
 
-  async listTenants(): Promise<Tenant[]> {
-    const rows = await this.prisma.tenant.findMany({ orderBy: { createdAt: 'asc' } });
+  async listTenants(network?: string): Promise<Tenant[]> {
+    const rows = await this.prisma.tenant.findMany({
+      where: network ? { network } : undefined,
+      orderBy: { createdAt: 'asc' },
+    });
     return rows.map((row) => mapTenantRowToTenant(row as unknown as PrismaTenantRow));
   }
 
@@ -573,6 +739,46 @@ export class PrismaWebhookDeliveryStore implements WebhookDeliveryStore {
         lastError: error,
         nextRetryAt: null,
         deadLetteredAt,
+      },
+    });
+    return mapWebhookDeliveryRowToDelivery(row as unknown as PrismaWebhookDeliveryRow);
+  }
+
+  /**
+   * Lists dead-lettered deliveries, newest first, with pagination.
+   */
+  async listDeadLettered(limit: number, offset: number): Promise<WebhookDelivery[]> {
+    const rows = await this.prisma.webhookDelivery.findMany({
+      where: { status: 'dead_lettered' },
+      orderBy: { deadLetteredAt: 'desc' },
+      take: limit,
+      skip: offset,
+    });
+    return rows.map((row) =>
+      mapWebhookDeliveryRowToDelivery(row as unknown as PrismaWebhookDeliveryRow),
+    );
+  }
+
+  /**
+   * Returns a single dead-lettered delivery, or null if it is not dead-lettered.
+   */
+  async getDeadLettered(deliveryId: string): Promise<WebhookDelivery | null> {
+    const row = await this.prisma.webhookDelivery.findUnique({ where: { id: deliveryId } });
+    if (!row || row.status !== 'dead_lettered') {
+      return null;
+    }
+    return mapWebhookDeliveryRowToDelivery(row as unknown as PrismaWebhookDeliveryRow);
+  }
+
+  /**
+   * Records a replay attempt: bumps replayCount and sets replayedAt.
+   */
+  async markReplayed(deliveryId: string, replayedAt: Date = new Date()): Promise<WebhookDelivery> {
+    const row = await this.prisma.webhookDelivery.update({
+      where: { id: deliveryId },
+      data: {
+        replayCount: { increment: 1 },
+        replayedAt,
       },
     });
     return mapWebhookDeliveryRowToDelivery(row as unknown as PrismaWebhookDeliveryRow);

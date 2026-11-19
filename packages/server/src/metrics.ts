@@ -53,10 +53,9 @@ export const feeBumpRequestsTotal = new client.Counter({
   registers: [register],
 });
 
-export const feeSponsorResequenceTotal = new client.Counter({
-  name: "lumen_fee_sponsor_resequence_total",
-  help: "Total number of fee-sponsor resequence events (e.g. tx_bad_seq retries)",
-  labelNames: ["reason"],
+export const feeSponsorFeeCapExceededTotal = new client.Counter({
+  name: "lumen_fee_sponsor_fee_cap_exceeded_total",
+  help: "Total number of fee-bump requests rejected by the sponsor surge guard because the bumped fee exceeded the configured maximum fee cap",
   registers: [register],
 });
 

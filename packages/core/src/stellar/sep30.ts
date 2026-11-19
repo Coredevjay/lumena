@@ -13,6 +13,7 @@
  */
 
 import { Keypair, Transaction, TransactionBuilder, Networks } from "@stellar/stellar-sdk";
+import { withRetry, type RetryOptions } from "../utils/retry.js";
 
 // ---------------------------------------------------------------------------
 // Types and interfaces
@@ -135,6 +136,15 @@ export interface Sep30ClientOpts {
    * (e.g. API key, user-agent).
    */
   headers?: Record<string, string>;
+  /**
+   * Retry/backoff configuration applied to every request.
+   * Set `retries: 0` to disable retries.
+   */
+  retry?: RetryOptions;
+  /**
+   * Optional AbortSignal used to cancel in-flight requests.
+   */
+  signal?: AbortSignal;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,6 +188,8 @@ export class Sep30Client {
   private readonly serverUrl: string;
   private readonly networkPassphrase: string;
   private readonly defaultHeaders: Record<string, string>;
+  private readonly retry: RetryOptions;
+  private readonly signal?: AbortSignal;
 
   constructor(opts: Sep30ClientOpts) {
     this.serverUrl = opts.serverUrl.replace(/\/+$/, "");
@@ -186,6 +198,8 @@ export class Sep30Client {
       "Content-Type": "application/json",
       ...opts.headers,
     };
+    this.retry = opts.retry ?? {};
+    this.signal = opts.signal;
   }
 
   // -------------------------------------------------------------------------
@@ -203,27 +217,34 @@ export class Sep30Client {
     body?: unknown,
   ): Promise<T> {
     const headers = this.authHeaders(authToken);
-    const res = await fetch(`${this.serverUrl}${path}`, {
-      method,
-      headers,
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    });
 
-    if (!res.ok) {
-      let message: string;
-      try {
-        const err = (await res.json()) as Record<string, unknown>;
-        message = String(err["error"] ?? err["message"] ?? res.statusText);
-      } catch {
-        message = await res.text().catch(() => res.statusText);
-      }
-      throw new Error(`SEP-0030 ${method} ${path} failed (${res.status}): ${message}`);
-    }
+    return withRetry(
+      async () => {
+        const res = await fetch(`${this.serverUrl}${path}`, {
+          method,
+          headers,
+          signal: this.signal,
+          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        });
 
-    // 204 No Content
-    if (res.status === 204) return undefined as unknown as T;
+        if (!res.ok) {
+          let message: string;
+          try {
+            const err = (await res.json()) as Record<string, unknown>;
+            message = String(err["error"] ?? err["message"] ?? res.statusText);
+          } catch {
+            message = await res.text().catch(() => res.statusText);
+          }
+          throw new Error(`SEP-0030 ${method} ${path} failed (${res.status}): ${message}`);
+        }
 
-    return res.json() as Promise<T>;
+        // 204 No Content
+        if (res.status === 204) return undefined as unknown as T;
+
+        return res.json() as Promise<T>;
+      },
+      { ...this.retry, signal: this.signal ?? this.retry.signal },
+    );
   }
 
   // -------------------------------------------------------------------------

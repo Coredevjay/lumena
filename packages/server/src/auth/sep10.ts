@@ -10,7 +10,10 @@ import {
   BASE_FEE,
   Memo,
 } from '@stellar/stellar-sdk';
-import { resolveNetwork } from '@lumen/core';
+import {
+  verifyRegistrationResponse,
+  WebAuthnRegistrationOptions,
+} from './webauthn';
 
 /**
  * SEP-10 Web Authentication Protocol implementation.
@@ -318,6 +321,75 @@ export function issueToken(account: string): TokenResult {
 }
 
 // ---------------------------------------------------------------------------
+// WebAuthn registration
+// ---------------------------------------------------------------------------
+
+/**
+ * Configuration for WebAuthn registration verification. Callers can override
+ * any of these values; unspecified values fall back to environment variables.
+ */
+export type WebAuthnRegistrationConfig = WebAuthnRegistrationOptions;
+
+/**
+ * Resolves WebAuthn registration options from environment variables, with
+ * any explicitly provided overrides taking precedence.
+ *
+ * Environment variables:
+ *  - LUMEN_WEBAUTHN_REQUIRE_UV   ("true"/"false", default: true)
+ *  - LUMEN_WEBAUTHN_ORIGIN       (expected origin, e.g. https://app.example.com)
+ *  - LUMEN_WEBAUTHN_RP_ID        (expected relying party ID, e.g. example.com)
+ */
+export function getWebAuthnRegistrationConfig(
+  overrides: Partial<WebAuthnRegistrationConfig> = {},
+): WebAuthnRegistrationConfig {
+  const envRequireUv = process.env.LUMEN_WEBAUTHN_REQUIRE_UV;
+  const requireUserVerification =
+    overrides.requireUserVerification ??
+    (envRequireUv === undefined ? true : envRequireUv.toLowerCase() === 'true');
+
+  const expectedOrigin =
+    overrides.expectedOrigin ?? process.env.LUMEN_WEBAUTHN_ORIGIN;
+  if (!expectedOrigin) {
+    throw new Error(
+      'expectedOrigin is required (set LUMEN_WEBAUTHN_ORIGIN or pass expectedOrigin)',
+    );
+  }
+
+  const expectedRpId =
+    overrides.expectedRpId ?? process.env.LUMEN_WEBAUTHN_RP_ID;
+  if (!expectedRpId) {
+    throw new Error(
+      'expectedRpId is required (set LUMEN_WEBAUTHN_RP_ID or pass expectedRpId)',
+    );
+  }
+
+  return {
+    ...overrides,
+    requireUserVerification,
+    expectedOrigin,
+    expectedRpId,
+  };
+}
+
+/**
+ * Verifies a WebAuthn registration response using the core helper, applying
+ * environment-derived defaults for origin, RP ID and user verification.
+ *
+ * Throws if attestation, origin, RP ID hash or user verification checks fail.
+ */
+export async function verifyWebAuthnRegistration(
+  response: unknown,
+  overrides: Partial<WebAuthnRegistrationConfig> = {},
+): Promise<{ credentialId: string; publicKey: string }> {
+  if (!response || typeof response !== 'object') {
+    throw new Error('registration response is required');
+  }
+
+  const config = getWebAuthnRegistrationConfig(overrides);
+  return verifyRegistrationResponse(response, config);
+}
+
+// ---------------------------------------------------------------------------
 // Express router
 // ---------------------------------------------------------------------------
 
@@ -338,6 +410,26 @@ authRouter.get('/auth/challenge', (req: Request, res: Response) => {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'failed to build challenge';
+    res.status(400).json({ error: message });
+  }
+});
+
+authRouter.post('/auth/webauthn/register', async (req: Request, res: Response) => {
+  const response = req.body?.response ?? req.body;
+  if (!response || typeof response !== 'object') {
+    res.status(400).json({ error: 'registration response is required' });
+    return;
+  }
+
+  try {
+    const result = await verifyWebAuthnRegistration(response);
+    res.status(200).json({
+      verified: true,
+      credential_id: result.credentialId,
+    });
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : 'registration verification failed';
     res.status(400).json({ error: message });
   }
 });

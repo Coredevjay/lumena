@@ -162,6 +162,82 @@ describe("KeyManager", () => {
     });
   });
 
+  describe("secret zeroisation", () => {
+    it("zeroises the secret bytes after load", async () => {
+      const kp = keyManager.generateKeypair();
+      const stored = await keyManager.store(kp, "test-passphrase");
+
+      const loaded = await keyManager.load(stored.publicKey, "test-passphrase");
+      expect(loaded.publicKey()).toBe(kp.publicKey());
+
+      const retained = keyManager.__getRetainedSecretsForTesting();
+      expect(retained.length).toBeGreaterThan(0);
+      for (const bytes of retained) {
+        expect(bytes.every((b) => b === 0)).toBe(true);
+      }
+    });
+
+    it("zeroises the secret bytes after importKeystore", async () => {
+      const kp = keyManager.generateKeypair();
+      const envelope = await keyManager.exportKeystore(kp, "strong-password");
+
+      const restored = await keyManager.importKeystore(envelope, "strong-password");
+      expect(restored.publicKey()).toBe(kp.publicKey());
+
+      const retained = keyManager.__getRetainedSecretsForTesting();
+      expect(retained.length).toBeGreaterThan(0);
+      for (const bytes of retained) {
+        expect(bytes.every((b) => b === 0)).toBe(true);
+      }
+    });
+
+    it("zeroises the secret bytes after exportKeystore", async () => {
+      const kp = keyManager.generateKeypair();
+      await keyManager.exportKeystore(kp, "strong-password");
+
+      const retained = keyManager.__getRetainedSecretsForTesting();
+      expect(retained.length).toBeGreaterThan(0);
+      for (const bytes of retained) {
+        expect(bytes.every((b) => b === 0)).toBe(true);
+      }
+    });
+
+    it("dispose() zeroises retained buffers and subsequent operations throw", async () => {
+      const kp = keyManager.generateKeypair();
+      const stored = await keyManager.store(kp, "test-passphrase");
+      await keyManager.load(stored.publicKey, "test-passphrase");
+
+      const retained = keyManager.__getRetainedSecretsForTesting();
+      expect(retained.length).toBeGreaterThan(0);
+
+      keyManager.dispose();
+
+      for (const bytes of retained) {
+        expect(bytes.every((b) => b === 0)).toBe(true);
+      }
+
+      expect(() => keyManager.generateKeypair()).toThrow();
+      await expect(keyManager.load(stored.publicKey, "test-passphrase")).rejects.toThrow();
+      await expect(keyManager.store(kp, "test-passphrase")).rejects.toThrow();
+    });
+
+    it("does not retain the plaintext secret string on the manager after signing", async () => {
+      const kp = keyManager.generateKeypair();
+      const secret = kp.secret();
+
+      const signed = keyManager.sign(kp, "payload-to-sign");
+      expect(signed).toBeTruthy();
+
+      const ownValues = Object.values(keyManager as unknown as Record<string, unknown>);
+      for (const value of ownValues) {
+        if (typeof value === "string") {
+          expect(value).not.toBe(secret);
+          expect(value).not.toContain(secret);
+        }
+      }
+    });
+  });
+
   describe("encrypted keystore export/import", () => {
     it("exports an envelope containing salt, IV, ciphertext and auth tag", async () => {
       const kp = keyManager.generateKeypair();

@@ -101,6 +101,12 @@ Enable `SponsorMonitorService` and configure webhook alerts (`balance.low` event
 
 Run `pnpm audit` regularly and update dependencies promptly when security advisories are published. The scheduled weekly workflow will open alerts in GitHub Security if new vulnerabilities are discovered.
 
+### 7. Dispose of Key Material Promptly
+
+`KeyManager` holds secret key material in `Uint8Array`s and performs **best-effort zeroisation**: buffers are overwritten after signing and `dispose()` wipes any remaining secret material. Call `dispose()` as soon as a `KeyManager` is no longer needed (for example in a `finally` block) and avoid keeping long-lived secret strings around.
+
+**Caveat:** JavaScript runtimes cannot guarantee memory zeroisation. The garbage collector may copy buffers, strings are immutable and cannot be overwritten, and the engine may retain copies in registers, caches, or heap snapshots. Best-effort zeroisation narrows the exposure window but does not eliminate it — treat process memory as potentially recoverable and prefer hardware-backed signers (`AwsKmsSigner`, `GcpKmsSigner`, `VaultSigner`) for keys protecting real funds.
+
 ---
 
 ## Disclosure Policy

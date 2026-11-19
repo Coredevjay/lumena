@@ -46,103 +46,31 @@ Because browser storage is accessible to same-origin scripts, protect the
 application against cross-site scripting and do not treat `localStorage` as a
 trusted secret store.
 
-### Keystore format and Argon2id parameters
+### Best-effort zeroisation of in-memory secrets
 
-`packages/core/src/keys/keystore.ts` encrypts each key record with a key derived
-from the user passphrase via **Argon2id**. Every envelope carries an explicit
-format `version` and the exact KDF parameters used to derive its key, so
-parameters can be tuned per device class and migrated over time without
-breaking existing records.
+`KeyManager` holds decrypted secret key material in `Uint8Array`s rather than
+strings, and overwrites those buffers after each use (for example, immediately
+after signing). When you are done with a `KeyManager` instance, call
+`dispose()` to overwrite any remaining secret buffers it still holds.
 
-```ts
-interface KeystoreEnvelope {
-  version: 2;                 // envelope format version
-  kdf: {
-    memory: number;           // KiB of memory (Argon2id `m`)
-    iterations: number;       // time cost (Argon2id `t`)
-    parallelism: number;      // lanes (Argon2id `p`)
-  };
-  salt: string;               // base64, unique per record
-  nonce: string;              // base64, AES-GCM nonce
-  ciphertext: string;         // base64, AES-GCM ciphertext + tag
-}
-```
+This is **best-effort only**. JavaScript cannot guarantee that secret bytes are
+erased from process memory:
 
-The `kdf` object is stored alongside the ciphertext rather than being implied by
-the format version. This means a record written on a high-memory desktop can
-still be unlocked on a low-memory device, and a future parameter bump does not
-require a new envelope version.
+- The garbage collector may copy objects, leaving stale copies of the secret
+  in memory that you cannot reach or overwrite.
+- Strings are immutable and may be interned or deduplicated by the engine, so
+  any secret that ever passes through a string cannot be zeroed.
+- Engine optimisations (JIT, escape analysis, register allocation) may keep
+  additional copies of the data outside the `Uint8Array` you control.
 
-#### Minimum-strength floor
+Treat zeroisation as a way to narrow the exposure window, not as a hard
+security boundary. Do not rely on it to protect against an attacker who can
+read process memory.
 
-`validateKdfParams` rejects any envelope whose parameters fall below the
-security floor before a single byte is decrypted:
-
-| Parameter | Floor |
-|---|---|
-| `memory` | 19456 KiB (19 MiB) |
-| `iterations` | 2 |
-| `parallelism` | 1 |
-
-These match the OWASP Password Storage Cheat Sheet minimum for Argon2id
-(19 MiB, t=2, p=1). Envelopes below the floor are rejected with an error rather
-than silently unlocked, which prevents an attacker who can write to
-`localStorage` from downgrading a record to trivially brute-forceable
-parameters. Do not lower these values; raise them instead.
-
-#### Tuning per device class
-
-Pick the strongest parameters the target device can run in roughly 250–500 ms.
-Suggested starting points:
-
-| Device class | `memory` (KiB) | `iterations` | `parallelism` |
-|---|---|---|---|
-| Low-end mobile / embedded | 19456 | 2 | 1 |
-| Typical mobile / laptop | 65536 | 3 | 1 |
-| Desktop / workstation | 262144 | 3 | 4 |
-| Server-side / CI (non-interactive) | 1048576 | 4 | 4 |
-
-`parallelism` should not exceed the number of cores you expect to be available;
-Argon2id will still run correctly, but the time cost rises. Measure on real
-hardware — emulators and CI runners are not representative.
-
-#### Automatic upgrade on unlock
-
-When a record is unlocked, the keystore compares the stored `version` and `kdf`
-against the current defaults:
-
-1. **Legacy v1 envelopes** (no `version` field, fixed/implied parameters) are
-   read using the legacy derivation path, then immediately re-encrypted with the
-   current `version` and `kdf` defaults and written back. The plaintext key is
-   never persisted in the upgraded form.
-2. **v2 envelopes with weaker-than-current parameters** are likewise re-encrypted
-   with the current defaults after a successful unlock.
-3. **v2 envelopes at or above the current defaults** are left untouched.
-
-Upgrades happen only after a successful decrypt, so a wrong passphrase never
-mutates stored records. If the write-back fails (quota exceeded, storage
-disabled), the unlock still succeeds and the upgrade is retried on the next
-unlock.
-
-#### Migrating legacy v1 envelopes
-
-v1 records are unlocked transparently — no user action is required. If you need
-to migrate records ahead of time (for example, before tightening the floor or
-retiring the legacy derivation path), iterate the stored records and re-save
-each one after a successful unlock:
-
-```ts
-import { KeyManager } from "@lumen/core";
-
-const manager = new KeyManager({ storage });
-await manager.unlock(passphrase); // triggers upgrade-on-unlock for each record
-```
-
-Before removing legacy support, confirm that no v1 envelopes remain in any
-environment. Records that fail `validateKdfParams` after migration indicate
-either corruption or tampering and should be treated as compromised: ask the
-user to re-import the key from its backup rather than attempting to repair the
-envelope.
+Callers should also avoid retaining secret strings returned by the SDK: for
+example, do not store the `secret()` string of a `Keypair` in long-lived
+variables, logs, or caches. Convert to a `Uint8Array` where possible and
+overwrite it when finished.
 
 ---
 

@@ -1,4 +1,5 @@
 import { Keypair } from "@stellar/stellar-sdk";
+import { getCrypto } from "../crypto/index.js";
 
 // ---------------------------------------------------------------------------
 // WebAuthn DER signature parser and P-256 verification helpers  (#284)
@@ -166,8 +167,10 @@ export async function verifyWebAuthnAssertion(
     );
   }
 
+  const cryptoAdapter = getCrypto();
+
   // Step 2: SHA-256(clientDataJSON)
-  const clientDataHash = await crypto.subtle.digest("SHA-256", opts.clientDataJSON);
+  const clientDataHash = await cryptoAdapter.subtle.digest("SHA-256", opts.clientDataJSON);
 
   // Step 3: signed data = authenticatorData || SHA-256(clientDataJSON)
   const authData =
@@ -182,7 +185,7 @@ export async function verifyWebAuthnAssertion(
   const rawSig = derToRawSignature(opts.signature);
 
   // Step 5: verify
-  const valid = await crypto.subtle.verify(
+  const valid = await cryptoAdapter.subtle.verify(
     { name: "ECDSA", hash: "SHA-256" },
     opts.publicKey,
     rawSig,
@@ -364,6 +367,7 @@ export class PasskeyManager {
     keypair: Keypair;
     credential: PasskeyCredential;
   }> {
+    const cryptoAdapter = getCrypto();
     const rpName = opts.rpName ?? "Lumen Wallet";
     const challenge = opts.challenge ?? crypto.getRandomValues(new Uint8Array(32));
     const userId = crypto.getRandomValues(new Uint8Array(16));
@@ -488,7 +492,8 @@ export class PasskeyManager {
     keypair: Keypair;
     credentialId: string;
   }> {
-    const challenge = opts.challenge ?? crypto.getRandomValues(new Uint8Array(32));
+    const cryptoAdapter = getCrypto();
+    const challenge = opts.challenge ?? cryptoAdapter.getRandomValues(new Uint8Array(32));
 
     if (PasskeyManager.isWebAuthnSupported()) {
       const allowCredentials: PublicKeyCredentialDescriptor[] = opts.credentialId
@@ -576,8 +581,9 @@ export class PasskeyManager {
    * Fallback key derivation strategy using HMAC-SHA256 over credential ID and username.
    */
   async deriveKeypairFallback(credentialId: Uint8Array, username: string): Promise<Keypair> {
+    const cryptoAdapter = getCrypto();
     const encoder = new TextEncoder();
-    const secretKeyMaterial = await crypto.subtle.importKey(
+    const secretKeyMaterial = await cryptoAdapter.subtle.importKey(
       "raw",
       credentialId as unknown as BufferSource,
       { name: "HMAC", hash: "SHA-256" },
@@ -586,7 +592,7 @@ export class PasskeyManager {
     );
 
     const data = encoder.encode(`lumen-webauthn-fallback-seed:${username}`);
-    const signature = await crypto.subtle.sign("HMAC", secretKeyMaterial, data);
+    const signature = await cryptoAdapter.subtle.sign("HMAC", secretKeyMaterial, data);
     const seed = Buffer.from(new Uint8Array(signature).slice(0, 32));
 
     return Keypair.fromRawEd25519Seed(seed);

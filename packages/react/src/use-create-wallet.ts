@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { useLumen } from "./context.js";
+import { useLumenClient } from "./context.js";
 
 export interface CreateWalletResult {
   address: string;
@@ -15,7 +15,7 @@ export interface UseCreateWalletResult {
 }
 
 export function useCreateWallet(): UseCreateWalletResult {
-  const { client } = useLumen();
+  const client = useLumenClient();
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);

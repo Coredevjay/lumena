@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { LumenClient, PasskeyWalletResult } from "@lumen/web-sdk";
 import { LumenProvider } from "./context.js";
 import { useCreateWalletWithPasskey } from "./use-create-wallet-with-passkey.js";
+import { useLumenStore } from "./context.js";
 
 describe("useCreateWalletWithPasskey", () => {
   const result = {
@@ -70,6 +71,35 @@ describe("useCreateWalletWithPasskey", () => {
     expect(hookResult.current.data).toBeUndefined();
     expect(hookResult.current.error).toBeNull();
     expect(hookResult.current.loading).toBe(false);
+  });
+
+  it("only re-renders when relevant state changes", async () => {
+    const createWalletWithPasskey = vi.fn().mockResolvedValue(result);
+    const client = { createWalletWithPasskey } as unknown as LumenClient;
+    let renders = 0;
+
+    const { result: hookResult } = renderHook(
+      () => {
+        renders += 1;
+        return useCreateWalletWithPasskey();
+      },
+      { wrapper: wrapper(client) },
+    );
+
+    const initialRenders = renders;
+
+    // An unrelated store update must not re-render the hook consumer.
+    act(() => {
+      useLumenStore.getState().setNetwork("testnet");
+    });
+    expect(renders).toBe(initialRenders);
+
+    // A relevant change (this hook's own state) re-renders exactly once.
+    await act(async () => {
+      await hookResult.current.createWalletWithPasskey();
+    });
+    expect(renders).toBe(initialRenders + 1);
+    expect(hookResult.current.data).toBe(result);
   });
 
   it("fails with a clear error when called before hydration (SSR guard)", async () => {

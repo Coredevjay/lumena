@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { resolveDestination } from "@lumen/core";
-import { useLumen } from "./context.js";
+import { useLumenClient } from "./context.js";
 
 export interface SendPaymentParams {
   walletId: string;
@@ -22,7 +22,7 @@ export interface UseSendPaymentResult {
 }
 
 export function useSendPayment(): UseSendPaymentResult {
-  const { client } = useLumen();
+  const client = useLumenClient();
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);

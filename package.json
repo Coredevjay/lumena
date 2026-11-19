@@ -2,12 +2,15 @@
   "name": "handsoff",
   "version": "1.0.0",
   "private": true,
+  "sideEffects": false,
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
     "dev": "npm run dev --workspaces --if-present",
-    "build": "npm run build --workspaces --if-present",
+    "build": "tsup && npm run build --workspaces --if-present",
+    "build:tsup": "tsup",
+    "validate:package": "publint && attw --pack .",
     "test": "npm run test --workspaces --if-present",
     "test:fuzz": "npm run test:fuzz --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
@@ -34,7 +37,10 @@
     "@commitlint/config-conventional": "^19.2.2",
     "astro": "^4.15.0",
     "@astrojs/starlight": "^0.27.0",
-    "fast-check": "^3.19.0"
+    "@arethetypeswrong/cli": "^0.16.4",
+    "fast-check": "^3.19.0",
+    "publint": "^0.2.11",
+    "tsup": "^8.3.0"
   },
   "packageManager": "pnpm@12.14.0+sha512.c18ba6d87993d3d164cb5e8948f32b2c06ee854487e06cd8d86781342fb3e5bb4634367034711e86802baa9c37bea906ce1929ad08d70884c97d801df13389a6"
 }

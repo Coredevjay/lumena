@@ -1,4 +1,5 @@
 import { renderHook, act } from "@testing-library/react";
+import { useRef } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { LumenClient } from "@lumen/web-sdk";
@@ -101,5 +102,84 @@ describe("useWallet", () => {
 
     expect(result.current.wallet).toBe(walletTwo);
     expect(getWallet).toHaveBeenLastCalledWith("wallet-2");
+  });
+
+  it("only re-renders when the selected wallet state changes", () => {
+    const wallet = {} as ReturnType<LumenClient["getWallet"]>;
+    const getWallet = vi.fn().mockReturnValue(wallet);
+
+    const client = { getWallet } as unknown as LumenClient;
+
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <LumenProvider client={client}>{children}</LumenProvider>
+    );
+
+    const renderCount = { current: 0 };
+
+    const { result, rerender } = renderHook(
+      ({ walletId }) => {
+        renderCount.current += 1;
+        return useWallet(walletId);
+      },
+      {
+        initialProps: { walletId: "wallet-1" },
+        wrapper,
+      }
+    );
+
+    expect(result.current.wallet).toBe(wallet);
+    expect(renderCount.current).toBe(1);
+
+    // Re-rendering with the same wallet ID must not trigger extra renders
+    // from the store, since the selected state is unchanged.
+    rerender({ walletId: "wallet-1" });
+
+    expect(renderCount.current).toBe(2);
+    expect(result.current.wallet).toBe(wallet);
+    expect(getWallet).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-renders only the consumer whose selected state changed", () => {
+    const walletOne = {} as ReturnType<LumenClient["getWallet"]>;
+    const walletTwo = {} as ReturnType<LumenClient["getWallet"]>;
+
+    const getWallet = vi.fn((walletId: string) =>
+      walletId === "wallet-1" ? walletOne : walletTwo
+    );
+
+    const client = { getWallet } as unknown as LumenClient;
+
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <LumenProvider client={client}>{children}</LumenProvider>
+    );
+
+    const renderCounts = { current: { one: 0, two: 0 } };
+
+    const { result } = renderHook(
+      () => {
+        renderCounts.current.one += 1;
+        const one = useWallet("wallet-1");
+        renderCounts.current.two += 1;
+        const two = useWallet("wallet-2");
+        return { one, two };
+      },
+      { wrapper }
+    );
+
+    expect(result.current.one.wallet).toBe(walletOne);
+    expect(result.current.two.wallet).toBe(walletTwo);
+    expect(renderCounts.current.one).toBe(1);
+    expect(renderCounts.current.two).toBe(1);
+
+    act(() => {
+      result.current.one.refetch();
+    });
+
+    // The wallet-1 consumer updated; the wallet-2 consumer's selected state
+    // is unchanged, so its render count must not increase.
+    expect(result.current.one.wallet).toBe(walletOne);
+    expect(result.current.two.wallet).toBe(walletTwo);
+    expect(renderCounts.current.one).toBe(2);
+    expect(renderCounts.current.two).toBe(1);
   });
 });

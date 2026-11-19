@@ -20,6 +20,42 @@ The CI workflow triggers on:
 6. **Linter**: Executes `pnpm lint` via ESLint across all workspace packages.
 7. **Build Packages**: Compiles TypeScript across all workspace packages via Turborepo (`pnpm build`).
 8. **Unit Tests**: Runs Vitest test suites across all packages (`pnpm test`).
+9. **Build API Docs**: Generates the TypeDoc reference for all public exports (`pnpm docs`). The build fails if any exported symbol is missing documentation, so every public type, option, and function must have a JSDoc comment. The generated HTML is uploaded as a `typedoc` build artifact.
+10. **Validate Package Types**: Runs `publint` and `@arethetypeswrong/cli` against the published packages to catch broken `exports` maps, incorrect `types`/`main` fields, and module-resolution mismatches (ESM/CJS) before release.
+
+### API Documentation (TypeDoc)
+
+The public API reference is generated from JSDoc comments using TypeDoc. The
+configuration lives in `typedoc.json` at the repository root and covers the
+public entry points of each package.
+
+To build the docs locally:
+
+```
+pnpm docs
+```
+
+The output is written to `docs/api/` (git-ignored). CI runs the same command and
+fails on any TypeDoc warning, including undocumented exports.
+
+### Package Type Validation
+
+Two tools validate the published package metadata:
+
+- **publint** checks `package.json` fields (`exports`, `main`, `module`, `types`)
+  for correctness and consistency.
+- **arethetypeswrong** (`attw`) verifies that type declarations resolve correctly
+  under every supported module resolution mode.
+
+To run them locally:
+
+```
+pnpm --filter "@lumen/core" exec publint
+pnpm --filter "@lumen/core" exec attw --pack .
+```
+
+Replace `@lumen/core` with the package you are validating. CI runs both tools
+across all published packages and fails on any reported problem.
 
 ### Schema Snapshots
 

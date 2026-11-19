@@ -13,6 +13,7 @@
  */
 
 import { Keypair } from "@stellar/stellar-sdk";
+import { hmacSha512, pbkdf2Sha512 } from "../crypto/index.js";
 
 // ---------------------------------------------------------------------------
 // Internal BIP-32 / SLIP-0010 Ed25519 key derivation
@@ -37,16 +38,9 @@ const HARDENED_OFFSET = 0x80000000;
  * SLIP-0010 (HMAC-SHA512 with "ed25519 seed" key).
  */
 async function deriveMasterKey(seed: Uint8Array): Promise<Ed25519Node> {
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
+  const result = await hmacSha512(
     new TextEncoder().encode(STELLAR_CURVE_SEED),
-    { name: "HMAC", hash: "SHA-512" },
-    false,
-    ["sign"],
-  );
-
-  const result = new Uint8Array(
-    await crypto.subtle.sign("HMAC", keyMaterial, seed),
+    seed,
   );
 
   return {
@@ -74,15 +68,7 @@ async function deriveChildKey(parent: Ed25519Node, index: number): Promise<Ed255
   data[35] = (hardenedIndex >>> 8) & 0xff;
   data[36] = hardenedIndex & 0xff;
 
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
-    parent.chainCode,
-    { name: "HMAC", hash: "SHA-512" },
-    false,
-    ["sign"],
-  );
-
-  const result = new Uint8Array(await crypto.subtle.sign("HMAC", keyMaterial, data));
+  const result = await hmacSha512(parent.chainCode, data);
 
   return {
     key: result.slice(0, 32),
@@ -109,26 +95,12 @@ export async function mnemonicToSeed(
   const mnemonicNFKD = mnemonic.normalize("NFKD");
   const passphraseNFKD = ("mnemonic" + passphrase).normalize("NFKD");
 
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
+  return pbkdf2Sha512(
     enc.encode(mnemonicNFKD),
-    "PBKDF2",
-    false,
-    ["deriveBits"],
+    enc.encode(passphraseNFKD),
+    2048,
+    64, // 64 bytes
   );
-
-  const derivedBits = await crypto.subtle.deriveBits(
-    {
-      name: "PBKDF2",
-      salt: enc.encode(passphraseNFKD),
-      iterations: 2048,
-      hash: "SHA-512",
-    },
-    keyMaterial,
-    512, // 64 bytes
-  );
-
-  return new Uint8Array(derivedBits);
 }
 
 // ---------------------------------------------------------------------------

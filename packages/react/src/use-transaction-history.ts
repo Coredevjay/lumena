@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useLumen } from "./context.js";
+import { useLumenClient } from "./context.js";
 
 export interface Transaction {
   id: string;
@@ -25,7 +25,7 @@ interface TransactionPage {
 export function useTransactionHistory(
   walletId: string | undefined,
 ): UseTransactionHistoryResult {
-  const { client } = useLumen();
+  const client = useLumenClient();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(Boolean(walletId));
   const [error, setError] = useState<Error | null>(null);

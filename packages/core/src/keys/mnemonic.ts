@@ -1,6 +1,7 @@
 import * as bip39 from 'bip39';
 import { derivePath } from 'ed25519-hd-key';
 import { Keypair } from '@stellar/stellar-sdk';
+import { toHex } from '../crypto';
 
 /**
  * Default BIP-39 strength (128 bits => 12 words).
@@ -73,7 +74,7 @@ export function deriveKeypairFromMnemonic(
 
   const seed = bip39.mnemonicToSeedSync(mnemonic, passphrase);
   const path = `${SEP5_PATH_PREFIX}/${accountIndex}'`;
-  const { key } = derivePath(path, seed.toString('hex'));
+  const { key } = derivePath(path, toHex(seed));
 
-  return Keypair.fromRawEd25519Seed(Buffer.from(key));
+  return Keypair.fromRawEd25519Seed(key);
 }

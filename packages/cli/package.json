@@ -6,12 +6,30 @@
   "bin": {
     "lumen": "./dist/index.js"
   },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "dev": "tsc -p tsconfig.json --watch",
+    "build": "tsup",
+    "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "validate:publint": "publint",
+    "validate:attw": "attw --pack .",
+    "validate": "npm run validate:publint && npm run validate:attw"
   },
   "dependencies": {
     "@lumen/core": "workspace:*",
@@ -19,7 +37,10 @@
     "@stellar/stellar-sdk": "^12.0.0"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.16.0",
     "@types/ws": "^8.5.10",
+    "publint": "^0.2.0",
+    "tsup": "^8.0.0",
     "typescript": "^5.4.0",
     "vitest": "^1.6.0"
   }

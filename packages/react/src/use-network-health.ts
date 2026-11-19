@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useLumenClient } from './context';
 
 /**
  * Overall network health as reported by {@link useNetworkHealth}.
@@ -109,10 +110,15 @@ export function useNetworkHealth(
 ): UseNetworkHealthResult {
   const {
     pollInterval = DEFAULT_POLL_INTERVAL,
-    rpcUrl = DEFAULT_RPC_URL,
+    rpcUrl: rpcUrlOption,
     fetcher,
     ping,
   } = options;
+
+  // Read the RPC endpoint from the stable client context so this hook does
+  // not re-render when unrelated wallet/network state changes.
+  const client = useLumenClient();
+  const rpcUrl = rpcUrlOption ?? client?.rpcUrl ?? DEFAULT_RPC_URL;
 
   const [status, setStatus] = useState<NetworkHealthStatus>('offline');
   const [latencyMs, setLatencyMs] = useState<number>(0);
@@ -129,17 +135,30 @@ export function useNetworkHealth(
 
       if (!mountedRef.current) return;
 
-      setLatencyMs(result.latencyMs);
-      setLedgerNumber(result.ledgerNumber);
-      setStatus(
-        result.latencyMs > DEGRADED_LATENCY_THRESHOLD_MS ? 'degraded' : 'healthy',
+      // Only update state when values actually change so consumers of the
+      // selector-based store are not re-rendered unnecessarily.
+      setLatencyMs((prev) =>
+        prev === result.latencyMs ? prev : result.latencyMs,
       );
-      setError(null);
+      setLedgerNumber((prev) =>
+        prev === result.ledgerNumber ? prev : result.ledgerNumber,
+      );
+      setStatus((prev) => {
+        const next =
+          result.latencyMs > DEGRADED_LATENCY_THRESHOLD_MS
+            ? 'degraded'
+            : 'healthy';
+        return prev === next ? prev : next;
+      });
+      setError((prev) => (prev === null ? prev : null));
     } catch (err) {
       if (!mountedRef.current) return;
 
-      setStatus('offline');
-      setError(err instanceof Error ? err : new Error(String(err)));
+      setStatus((prev) => (prev === 'offline' ? prev : 'offline'));
+      setError((prev) => {
+        const next = err instanceof Error ? err : new Error(String(err));
+        return prev && prev.message === next.message ? prev : next;
+      });
     }
   }, [ping, rpcUrl, fetcher]);
 

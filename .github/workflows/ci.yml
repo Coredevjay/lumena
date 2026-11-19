@@ -67,6 +67,31 @@ jobs:
       - name: Build packages
         run: pnpm build
 
+      - name: Validate package publishing (publint)
+        run: pnpm exec publint packages/core packages/server packages/web-sdk packages/react
+
+      - name: Validate type resolution (arethetypeswrong)
+        run: |
+          for pkg in core server web-sdk react; do
+            pnpm exec attw --pack "packages/$pkg" --profile node16
+          done
+
+      - name: CJS require smoke test
+        shell: bash
+        run: |
+          for pkg in core server web-sdk react; do
+            node -e "
+              const mod = require('./packages/$pkg');
+              if (!mod || typeof mod !== 'object') {
+                throw new Error('CJS entry for @lumen/$pkg did not export an object');
+              }
+              if (Object.keys(mod).length === 0) {
+                throw new Error('CJS entry for @lumen/$pkg has no exports');
+              }
+              console.log('CJS require OK for @lumen/$pkg:', Object.keys(mod).join(', '));
+            "
+          done
+
       - name: Run unit tests with coverage
         run: pnpm --filter "@lumen/core" test:coverage && pnpm --filter "@lumen/server" test:coverage && pnpm --filter "@lumen/web-sdk" test:coverage && pnpm --filter "@lumen/react" test:coverage
 

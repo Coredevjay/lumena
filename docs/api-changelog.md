@@ -14,6 +14,8 @@ sync with it (its `openapi` and `info.version` fields are checked by
 | API version | Date | Type | Change |
 |---|---|---|---|
 | `0.1.0` | Initial | Added | Initial API: `/health`, `/cosign`, `/fee-bump`, `/fee-bump/submit`, `/wallets`, `/wallet/create`, `/wallet/{address}/transactions`, `/wallet/{address}/analytics`, `/wallet/{address}/balance`, `/policy`, `/policy/{walletId}`, `/webhooks`, `/webhooks/{id}`, `/webhooks/{id}/test`. |
+| `0.1.0` | Initial | Added | TypeDoc-generated API reference for the `@lumen/core` public exports, including `StellarClient` options (networks, timeouts, sponsor, signer). Built in CI and published alongside the package docs. |
+| `0.1.0` | Initial | Changed | `@lumen/core` now ships a dual ESM/CJS build with matching type declarations for both module systems. |
 
 ## How entries are generated
 

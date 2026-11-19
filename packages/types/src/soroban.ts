@@ -1,3 +1,12 @@
+/**
+ * Scalar type tag used to disambiguate a {@link ContractArg} value when
+ * converting it to a Soroban `ScVal`.
+ *
+ * @example
+ * ```ts
+ * const type: ScValType = "u64";
+ * ```
+ */
 export type ScValType =
   | "bool"
   | "u32"
@@ -16,26 +25,77 @@ export type ScValType =
 /**
  * Valid scalar input types for Soroban contract arguments.
  * Use this instead of `any[]` when passing arguments to contract invocations.
+ *
+ * @example
+ * ```ts
+ * const args: ScValInput[] = [42n, "hello", true, { value: 10n, type: "i128" }];
+ * ```
  */
 export type ScValInput = string | number | bigint | boolean | ContractArg;
 
+/**
+ * A single Soroban contract argument with an optional explicit type tag.
+ *
+ * When `type` is omitted, the SDK infers the `ScVal` type from the runtime
+ * type of `value`.
+ *
+ * @example
+ * ```ts
+ * const amount: ContractArg = { value: 1_000_000n, type: "i128" };
+ * const memo: ContractArg = { value: "invoice-42" };
+ * ```
+ */
 export interface ContractArg {
+  /** Raw argument value. */
   value: string | number | bigint | boolean | Uint8Array;
+  /** Optional explicit `ScVal` type; inferred from `value` when omitted. */
   type?: ScValType;
 }
 
+/**
+ * Description of a Soroban contract invocation.
+ *
+ * @example
+ * ```ts
+ * const invocation: ContractInvocation = {
+ *   contractId: "CABC...XYZ",
+ *   method: "transfer",
+ *   args: ["GABC...XYZ", "GDEF...UVW", 1_000_000n],
+ * };
+ * ```
+ */
 export interface ContractInvocation {
+  /** Contract address (C...) to invoke. */
   contractId: string;
+  /** Name of the contract function to call. */
   method: string;
+  /** Positional arguments passed to the function. */
   args?: ScValInput[];
 }
 
+/**
+ * Result of simulating a contract invocation without submitting it.
+ *
+ * @example
+ * ```ts
+ * const result: ContractSimulationResult = await client.simulate(invocation);
+ * if (result.successful) {
+ *   console.log(result.returnValue, result.minResourceFee);
+ * }
+ * ```
+ */
 export interface ContractSimulationResult {
+  /** Whether the simulated invocation succeeded. */
   successful: boolean;
+  /** Decoded return value of the invocation, if any. */
   returnValue?: any;
+  /** Minimum resource fee (in stroops) required to submit the transaction. */
   minResourceFee?: string;
+  /** CPU instructions consumed by the invocation. */
   cpuInstructions?: number;
+  /** Memory bytes consumed by the invocation. */
   memoryBytes?: number;
+  /** Error message when `successful` is `false`. */
   error?: string;
 }
 

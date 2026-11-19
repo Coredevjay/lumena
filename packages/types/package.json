@@ -2,20 +2,32 @@
   "name": "@lumen/types",
   "version": "0.1.0",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
     }
   },
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsup",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint:publint": "publint",
+    "lint:attw": "attw --pack .",
+    "validate": "npm run lint:publint && npm run lint:attw"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.17.0",
+    "publint": "^0.3.0",
+    "tsup": "^8.3.0",
     "typescript": "^5.8.0"
   }
 }

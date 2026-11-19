@@ -11,6 +11,14 @@
  */
 
 import { argon2id } from 'hash-wasm';
+import {
+  getCrypto,
+  randomBytes as cryptoRandomBytes,
+  bytesToBase64,
+  base64ToBytes,
+  utf8Encode,
+  utf8Decode,
+} from '../crypto/index.js';
 
 /** Current keystore envelope version. */
 export const KEYSTORE_VERSION = 2 as const;
@@ -159,87 +167,27 @@ export type KeystoreErrorCode =
 // Environment helpers
 // ---------------------------------------------------------------------------
 
-interface WebCryptoLike {
-  subtle: SubtleCrypto;
-  getRandomValues<T extends ArrayBufferView>(array: T): T;
-}
-
-function getWebCrypto(): WebCryptoLike {
-  const g = globalThis as unknown as {
-    crypto?: WebCryptoLike;
-  };
-  if (!g.crypto || !g.crypto.subtle || typeof g.crypto.getRandomValues !== 'function') {
+/**
+ * Resolve the platform crypto adapter, translating adapter failures into
+ * {@link KeystoreError} so callers see a stable error surface.
+ */
+function getWebCrypto() {
+  try {
+    return getCrypto();
+  } catch {
     throw new KeystoreError(
       'WebCrypto API is not available in this environment',
       'CRYPTO_UNAVAILABLE',
     );
   }
-  return g.crypto;
 }
 
 // ---------------------------------------------------------------------------
 // Encoding helpers
 // ---------------------------------------------------------------------------
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (let i = 0; i < bytes.length; i += 1) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  if (typeof btoa === 'function') {
-    return btoa(binary);
-  }
-  // Node.js fallback.
-  const buf = (globalThis as unknown as { Buffer?: typeof Buffer }).Buffer;
-  if (buf) {
-    return buf.from(bytes).toString('base64');
-  }
-  throw new KeystoreError('No base64 encoder available', 'CRYPTO_UNAVAILABLE');
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  if (typeof atob === 'function') {
-    const binary = atob(b64);
-    const out = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
-      out[i] = binary.charCodeAt(i);
-    }
-    return out;
-  }
-  const buf = (globalThis as unknown as { Buffer?: typeof Buffer }).Buffer;
-  if (buf) {
-    return new Uint8Array(buf.from(b64, 'base64'));
-  }
-  throw new KeystoreError('No base64 decoder available', 'CRYPTO_UNAVAILABLE');
-}
-
-function utf8Encode(str: string): Uint8Array {
-  if (typeof TextEncoder !== 'undefined') {
-    return new TextEncoder().encode(str);
-  }
-  const buf = (globalThis as unknown as { Buffer?: typeof Buffer }).Buffer;
-  if (buf) {
-    return new Uint8Array(buf.from(str, 'utf8'));
-  }
-  throw new KeystoreError('No UTF-8 encoder available', 'CRYPTO_UNAVAILABLE');
-}
-
-function utf8Decode(bytes: Uint8Array): string {
-  if (typeof TextDecoder !== 'undefined') {
-    return new TextDecoder().decode(bytes);
-  }
-  const buf = (globalThis as unknown as { Buffer?: typeof Buffer }).Buffer;
-  if (buf) {
-    return buf.from(bytes).toString('utf8');
-  }
-  throw new KeystoreError('No UTF-8 decoder available', 'CRYPTO_UNAVAILABLE');
-}
-
 function randomBytes(length: number): Uint8Array {
-  const crypto = getWebCrypto();
-  const out = new Uint8Array(length);
-  crypto.getRandomValues(out);
-  return out;
+  return cryptoRandomBytes(length);
 }
 
 // ---------------------------------------------------------------------------

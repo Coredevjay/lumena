@@ -1,6 +1,14 @@
 "use client";
 
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type { LumenClient } from "@lumen/web-sdk";
 import { FUTURENET, PUBLIC, TESTNET } from "@lumen/core";
 import { useIsMounted } from "./hooks/use-is-mounted.js";
@@ -37,6 +45,79 @@ export interface LumenContextValue {
 }
 
 export const LumenContext = createContext<LumenContextValue | null>(null);
+
+/**
+ * Mutable provider state. Kept in a small external store so that consumers
+ * can subscribe to individual slices via `useSyncExternalStore` and only
+ * re-render when the slice they read changes.
+ */
+export interface LumenState {
+  isMounted: boolean;
+  currentNetwork: LumenNetwork;
+  supportedNetworks: LumenNetwork[];
+}
+
+type Listener = () => void;
+
+export interface LumenStore {
+  getState: () => LumenState;
+  setState: (patch: Partial<LumenState>) => void;
+  subscribe: (listener: Listener) => () => void;
+}
+
+/**
+ * Creates a minimal external store. `setState` performs a shallow merge and
+ * only notifies listeners when at least one value actually changed, so
+ * identical updates never trigger re-renders.
+ */
+export function createLumenStore(initial: LumenState): LumenStore {
+  let state = initial;
+  const listeners = new Set<Listener>();
+
+  return {
+    getState: () => state,
+    setState(patch) {
+      let changed = false;
+      for (const key of Object.keys(patch) as (keyof LumenState)[]) {
+        if (!Object.is(state[key], patch[key])) {
+          changed = true;
+          break;
+        }
+      }
+      if (!changed) {
+        return;
+      }
+      state = { ...state, ...patch };
+      for (const listener of listeners) {
+        listener();
+      }
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
+}
+
+/**
+ * Subscribes to a single slice of the provider state. The component only
+ * re-renders when the selected value changes (compared with `Object.is`).
+ */
+export function useLumenSelector<T>(store: LumenStore, selector: (state: LumenState) => T): T {
+  return useSyncExternalStore(
+    store.subscribe,
+    () => selector(store.getState()),
+    () => selector(store.getState()),
+  );
+}
+
+/** Stable context holding only the active `LumenClient` instance. */
+export const LumenClientContext = createContext<LumenClient | null>(null);
+
+/** Context carrying the external store for mutable provider state. */
+export const LumenStoreContext = createContext<LumenStore | null>(null);
 
 /**
  * `true` when running in a browser environment. Safe to evaluate during
@@ -134,6 +215,20 @@ export function LumenProvider({
 
   const networks = supportedNetworks ?? (createClient ? DEFAULT_SUPPORTED_NETWORKS : [network]);
 
+  const storeRef = useRef<LumenStore | null>(null);
+  if (storeRef.current === null) {
+    storeRef.current = createLumenStore({
+      isMounted: false,
+      currentNetwork: network,
+      supportedNetworks: networks,
+    });
+  }
+  const store = storeRef.current;
+
+  // Keep the external store in sync with props and mount state. `setState`
+  // is a no-op when nothing changed, so this never causes spurious renders.
+  store.setState({ isMounted, currentNetwork, supportedNetworks: networks });
+
   const activeClient = useMemo(() => {
     if (currentNetwork === network || !createClient) {
       return client;
@@ -168,18 +263,25 @@ export function LumenProvider({
   // calls fail with a descriptive error instead of a `ReferenceError`.
   const safeClient = isBrowserEnvironment() ? activeClient : serverSafeLumenContextValue.client;
 
+  // Backwards-compatible combined value for `useLumen()` consumers. It is
+  // memoised so it only changes when one of its inputs changes.
+  const contextValue = useMemo<LumenContextValue>(
+    () => ({
+      client: safeClient,
+      isMounted,
+      currentNetwork,
+      supportedNetworks: networks,
+      switchNetwork,
+    }),
+    [safeClient, isMounted, currentNetwork, networks, switchNetwork],
+  );
+
   return (
-    <LumenContext.Provider
-      value={{
-        client: safeClient,
-        isMounted,
-        currentNetwork,
-        supportedNetworks: networks,
-        switchNetwork,
-      }}
-    >
-      {children}
-    </LumenContext.Provider>
+    <LumenStoreContext.Provider value={store}>
+      <LumenClientContext.Provider value={safeClient}>
+        <LumenContext.Provider value={contextValue}>{children}</LumenContext.Provider>
+      </LumenClientContext.Provider>
+    </LumenStoreContext.Provider>
   );
 }
 
@@ -226,4 +328,29 @@ export function useLumen(): LumenContextValue {
   }
 
   return context;
+}
+
+/**
+ * Returns the active `LumenClient` from the stable client context. Components
+ * using this hook do not re-render when unrelated provider state (such as
+ * `isMounted`) changes.
+ */
+export function useLumenClient(): LumenClient {
+  const client = useContext(LumenClientContext);
+  if (!client) {
+    throw new Error("useLumenClient must be used within a LumenProvider");
+  }
+  return client;
+}
+
+/**
+ * Reads a single slice of provider state through the external store. Only
+ * re-renders when the selected value changes.
+ */
+export function useLumenState<T>(selector: (state: LumenState) => T): T {
+  const store = useContext(LumenStoreContext);
+  if (!store) {
+    throw new Error("useLumenState must be used within a LumenProvider");
+  }
+  return useLumenSelector(store, selector);
 }

@@ -1,4 +1,5 @@
 import { Keypair } from "@stellar/stellar-sdk";
+import { hmacSha256, utf8ToBytes } from "../crypto";
 import {
   decryptKeystore,
   encryptKeystore,
@@ -175,18 +176,9 @@ export class KeyManager {
   }
 
   async deriveFromOAuth(provider: string, token: string, salt?: string): Promise<Keypair> {
-    const encoder = new TextEncoder();
-    const keyMaterial = await crypto.subtle.importKey(
-      "raw",
-      encoder.encode(token),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["sign"],
-    );
-
-    const data = encoder.encode(`${provider}:${salt ?? "lumen-derivation"}`);
-    const signature = await crypto.subtle.sign("HMAC", keyMaterial, data);
-    const seed = Buffer.from(new Uint8Array(signature).slice(0, 32));
+    const data = utf8ToBytes(`${provider}:${salt ?? "lumen-derivation"}`);
+    const signature = await hmacSha256(utf8ToBytes(token), data);
+    const seed = signature.slice(0, 32);
 
     return Keypair.fromRawEd25519Seed(seed);
   }

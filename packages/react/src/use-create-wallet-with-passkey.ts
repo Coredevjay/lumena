@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import type { PasskeyRegistrationOpts, PasskeyWalletResult } from "@lumen/web-sdk";
-import { useLumen } from "./context.js";
+import { useLumenClient, useLumenSelector } from "./context.js";
 
 export interface UseCreateWalletWithPasskeyResult {
   createWalletWithPasskey: (opts?: PasskeyRegistrationOpts) => Promise<PasskeyWalletResult>;
@@ -15,7 +15,8 @@ const SSR_ERROR_MESSAGE =
   "Wait for client-side hydration before calling createWalletWithPasskey.";
 
 export function useCreateWalletWithPasskey(): UseCreateWalletWithPasskeyResult {
-  const { client, isMounted } = useLumen();
+  const client = useLumenClient();
+  const isMounted = useLumenSelector((state) => state.isMounted);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [data, setData] = useState<PasskeyWalletResult>();

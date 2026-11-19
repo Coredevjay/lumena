@@ -196,6 +196,8 @@ Step-by-step guides for common integration patterns:
 | Guide | Description |
 | --- | --- |
 | [Gasless Transactions](docs/guides/gasless-transactions.md) | End-to-end walkthrough of Stellar Fee-Bump (CAP-0015) and how Lumen abstracts gas fees — with code examples for `@lumen/web-sdk`, `@lumen/react`, and the raw REST API. |
+| [Glossary](docs/glossary.md) | Glossary of terms: seedless, gasless, sponsorship, 2-of-2, co-sign, and more. |
+| [FAQ](docs/faq.md) | Frequently asked questions. |
 
 ---
 
@@ -208,6 +210,10 @@ Automated security analysis runs on every push and pull request via GitHub Actio
 - **Weekly scheduled scan** to catch newly-published advisories.
 
 See [docs/SECURITY.md](docs/SECURITY.md) for the full security policy, vulnerability reporting instructions, and security best practices for production deployments.
+
+For an analysis of what a compromised server, sponsor key, signer backend, or client can and cannot do, see the [Threat Model](docs/threat-model.md).
+
+Incident response procedures for sponsor balance depletion, Horizon outages, signer failures, and replay/fraud alerts are documented in the [Runbooks](docs/runbooks/).
 
 ---
 

@@ -28,7 +28,7 @@ Lumen wallets are designed around the following controls:
 - **Protected signing keys:** Production deployments should keep co-signer and fee-payer private keys in a KMS or HSM, with least-privilege access and audit logging. Raw environment secrets are for local development and testnet use only.
 - **Fee sponsorship:** Approved transactions may be wrapped in a fee-bump envelope so users do not pay Stellar transaction fees. Sponsorship must not be usable to bypass wallet authorization or policy controls.
 
-These controls reduce the impact of a compromised component, but they do not eliminate the need to protect user devices, passkeys, hosting, network endpoints, and signing credentials.
+These controls reduce the impact of a compromised component, but they do not eliminate the need to protect user devices, passkeys, hosting, network endpoints, and signing credentials. See [docs/threat-model.md](docs/threat-model.md) for a detailed analysis of assets, actors, trust boundaries, attack scenarios, and mitigations for the cosigner/server architecture.
 
 ## In scope
 

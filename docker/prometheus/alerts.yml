@@ -8,6 +8,8 @@ groups:
           severity: critical
         annotations:
           summary: Sponsor account balance is below 100 XLM
+          description: Top up the sponsor account immediately; see the runbook for refill and verification steps.
+          runbook_url: https://github.com/utilityjnr1/lumena/blob/main/docs/runbooks/sponsor-balance-depletion.md
 
       - alert: CosignErrorRateHigh
         expr: |
@@ -19,6 +21,8 @@ groups:
           severity: warning
         annotations:
           summary: Co-sign error rate is above 5%
+          description: Check signer health and key configuration; follow the runbook to isolate the failing signer.
+          runbook_url: https://github.com/utilityjnr1/lumena/blob/main/docs/runbooks/signer-failure.md
 
       - alert: RPCLatencySpike
         expr: lumen_stellar_endpoint_latency_ms > 2000
@@ -27,6 +31,8 @@ groups:
           severity: warning
         annotations:
           summary: Stellar RPC endpoint latency is above 2 seconds
+          description: Verify Horizon status and fail over to a backup endpoint; see the runbook for outage handling.
+          runbook_url: https://github.com/utilityjnr1/lumena/blob/main/docs/runbooks/horizon-outage.md
 
       - alert: PolicyLatencySpike
         expr: |
@@ -39,3 +45,5 @@ groups:
           severity: warning
         annotations:
           summary: Policy evaluation p95 latency is above 2 seconds
+          description: Inspect policy evaluation load and replay/fraud signals; follow the runbook to triage.
+          runbook_url: https://github.com/utilityjnr1/lumena/blob/main/docs/runbooks/replay-fraud.md

@@ -19,6 +19,101 @@ export interface Tenant {
   monthlyGasQuotaXlm: number;
   monthlyGasUsedXlm: number;
   allowedDomains: string[];
+  /**
+   * Optional per-tenant Stellar network override. When omitted, the network is
+   * resolved from the registry (by tenant id / API key hash) or the legacy
+   * global env config.
+   */
+  network?: string;
+}
+
+/**
+ * Resolved Stellar network configuration for a single tenant. Instances of this
+ * object are treated as immutable and must never be shared across tenants.
+ */
+export interface NetworkConfig {
+  /** Logical network name, e.g. "testnet" or "mainnet". */
+  name: string;
+  horizonUrl: string;
+  rpcUrl: string;
+  networkPassphrase: string;
+  /** Optional sponsor account public key for this network. */
+  sponsor?: string;
+}
+
+/**
+ * Tenant-scoped network registry. Keys may be tenant ids or API key hashes;
+ * both are consulted so callers can key by whichever identifier they hold.
+ */
+export interface NetworkRegistry {
+  /** Resolve a network config for a tenant id. */
+  getByTenantId(tenantId: string): NetworkConfig | undefined;
+  /** Resolve a network config for an API key hash. */
+  getByApiKeyHash(apiKeyHash: string): NetworkConfig | undefined;
+}
+
+export interface NetworkResolverOpts {
+  registry?: NetworkRegistry;
+  /** Legacy global fallback derived from STELLAR_NETWORK / HORIZON_URL / SOROBAN_RPC_URL. */
+  fallback?: NetworkConfig;
+}
+
+const KNOWN_PASSPHRASES: Record<string, string> = {
+  testnet: "Test SDF Network ; September 2015",
+  mainnet: "Public Global Stellar Network ; September 2015",
+  futurenet: "Test SDF Future Network ; October 2022",
+};
+
+/**
+ * Build the legacy global network config from environment variables. This is
+ * the fallback used when no tenant-scoped network is registered.
+ */
+export function networkConfigFromEnv(env: NodeJS.ProcessEnv = process.env): NetworkConfig {
+  const name = (env.STELLAR_NETWORK || "testnet").toLowerCase();
+  const passphrase =
+    env.STELLAR_NETWORK_PASSPHRASE ||
+    KNOWN_PASSPHRASES[name] ||
+    KNOWN_PASSPHRASES.testnet;
+  const horizonUrl =
+    env.HORIZON_URL ||
+    (name === "mainnet"
+      ? "https://horizon.stellar.org"
+      : `https://horizon-${name}.stellar.org`);
+  const rpcUrl =
+    env.SOROBAN_RPC_URL ||
+    (name === "mainnet"
+      ? "https://soroban-rpc.mainnet.stellar.gateway.fm"
+      : `https://soroban-rpc.${name}.stellar.org`);
+  return {
+    name,
+    horizonUrl,
+    rpcUrl,
+    networkPassphrase: passphrase,
+    sponsor: env.STELLAR_SPONSOR_PUBLIC_KEY || undefined,
+  };
+}
+
+/**
+ * Resolve the network config for a tenant, preferring tenant-scoped entries and
+ * falling back to the legacy global config. Always returns a fresh object so
+ * callers cannot mutate shared registry state.
+ */
+export function resolveNetworkConfig(
+  tenant: Pick<Tenant, "id" | "apiKeyHash" | "network">,
+  opts: NetworkResolverOpts = {},
+): NetworkConfig {
+  const registry = opts.registry;
+  let resolved: NetworkConfig | undefined;
+  if (registry) {
+    resolved =
+      registry.getByTenantId(tenant.id) ||
+      registry.getByApiKeyHash(tenant.apiKeyHash);
+  }
+  if (!resolved && tenant.network) {
+    resolved = registry?.getByTenantId(tenant.network);
+  }
+  const base = resolved || opts.fallback || networkConfigFromEnv();
+  return { ...base };
 }
 
 export interface TenantStore {
@@ -32,6 +127,8 @@ declare global {
     interface Request {
       user?: AuthUser;
       tenant?: Tenant;
+      /** Tenant-scoped network config resolved during authentication. */
+      networkConfig?: NetworkConfig;
     }
   }
 }
@@ -40,6 +137,10 @@ export interface AuthMiddlewareOpts {
   apiKey?: string;
   jwtSecret?: string;
   tenantStore?: TenantStore;
+  /** Tenant-scoped network registry; falls back to legacy env config. */
+  networkRegistry?: NetworkRegistry;
+  /** Explicit legacy fallback network config (defaults to env-derived). */
+  fallbackNetwork?: NetworkConfig;
 }
 
 /**
@@ -226,6 +327,12 @@ export function apiKeyAuth(opts: AuthMiddlewareOpts = {}) {
       }
 
       req.tenant = tenant;
+      // Resolve the tenant's network config and attach it to the request so
+      // downstream handlers never fall back to a global/other-tenant network.
+      req.networkConfig = resolveNetworkConfig(tenant, {
+        registry: opts.networkRegistry,
+        fallback: opts.fallbackNetwork,
+      });
       return next();
     }
 

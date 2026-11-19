@@ -6,10 +6,15 @@
  *  - Horizon account updates
  *  - Soroban RPC contract events
  *
- * The client automatically reconnects on disconnect using exponential
- * backoff with jitter, and re-issues every active subscription, replaying
- * the last cursor per topic so no events are dropped.
+ * The client automatically reconnects on disconnect using the shared
+ * exponential backoff with jitter utilities, and re-issues every active
+ * subscription, replaying the last cursor per topic so no events are dropped.
  */
+
+import {
+  computeBackoffDelay,
+  type BackoffOptions,
+} from '../../utils/retry';
 
 export type StreamTopic = 'payments' | 'account' | 'contract';
 
@@ -89,6 +94,8 @@ export interface StreamClientOptions {
   /** Timer functions, injectable for testing. */
   setTimeoutFn?: (fn: () => void, ms: number) => unknown;
   clearTimeoutFn?: (handle: unknown) => void;
+  /** Optional abort signal to cancel reconnects and close the client. */
+  signal?: AbortSignal;
 }
 
 export interface WebSocketLike {
@@ -152,6 +159,11 @@ export class StreamClient {
   private readonly webSocketFactory: (url: string) => WebSocketLike;
   private readonly setTimeoutFn: (fn: () => void, ms: number) => unknown;
   private readonly clearTimeoutFn: (handle: unknown) => void;
+  private readonly backoffOptions: BackoffOptions;
+  private readonly signal?: AbortSignal;
+  private readonly onAbort = (): void => {
+    this.close();
+  };
 
   private subscriptions = new Map<string, Subscription>();
   private sockets = new Map<string, WebSocketLike>();
@@ -180,6 +192,20 @@ export class StreamClient {
     this.clearTimeoutFn =
       options.clearTimeoutFn ??
       ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
+    this.backoffOptions = {
+      initialDelayMs: this.initialBackoffMs,
+      maxDelayMs: this.maxBackoffMs,
+      factor: this.backoffFactor,
+      jitterRatio: this.jitterRatio,
+    };
+    this.signal = options.signal;
+    if (this.signal) {
+      if (this.signal.aborted) {
+        this.closed = true;
+      } else {
+        this.signal.addEventListener('abort', this.onAbort);
+      }
+    }
   }
 
   /** Current connection state. */
@@ -207,7 +233,7 @@ export class StreamClient {
    * Subscribe to a stream topic. Returns the subscription id.
    */
   subscribe(topic: StreamTopic, params: SubscriptionParams = {}): string {
-    if (this.closed) {
+    if (this.closed || this.signal?.aborted) {
       throw new Error('StreamClient is closed');
     }
     const id = nextSubscriptionId();
@@ -245,6 +271,9 @@ export class StreamClient {
 
   /** Close all subscriptions and stop reconnecting. */
   close(): void {
+    if (this.signal) {
+      this.signal.removeEventListener('abort', this.onAbort);
+    }
     this.closed = true;
     if (this.reconnectTimer !== null) {
       this.clearTimeoutFn(this.reconnectTimer);
@@ -349,7 +378,7 @@ export class StreamClient {
   }
 
   private openSubscription(subscription: Subscription): void {
-    if (this.closed || !subscription.active) {
+    if (this.closed || this.signal?.aborted || !subscription.active) {
       return;
     }
     let socket: WebSocketLike;
@@ -367,7 +396,7 @@ export class StreamClient {
     }
 
     socket.onopen = () => {
-      if (this.closed || !subscription.active) {
+      if (this.closed || this.signal?.aborted || !subscription.active) {
         return;
       }
       try {
@@ -389,7 +418,7 @@ export class StreamClient {
 
     socket.onclose = () => {
       this.sockets.delete(subscription.id);
-      if (this.closed || !subscription.active) {
+      if (this.closed || this.signal?.aborted || !subscription.active) {
         return;
       }
       this.scheduleReconnect();
@@ -464,23 +493,30 @@ export class StreamClient {
     if (this.closed || this.reconnectTimer !== null) {
       return;
     }
+    if (this.signal?.aborted) {
+      this.close();
+      return;
+    }
     if (this.subscriptions.size === 0) {
       this.setState('idle');
       return;
     }
     this.setState('reconnecting');
 
-    const delay = this.computeBackoff(this.reconnectAttempts);
+    const delay = computeBackoffDelay(this.reconnectAttempts, this.backoffOptions);
     this.reconnectAttempts += 1;
 
     this.reconnectTimer = this.setTimeoutFn(() => {
       this.reconnectTimer = null;
+      if (this.closed || this.signal?.aborted) {
+        return;
+      }
       this.reconnectAll();
     }, delay);
   }
 
   private reconnectAll(): void {
-    if (this.closed) {
+    if (this.closed || this.signal?.aborted) {
       return;
     }
     for (const subscription of this.subscriptions.values()) {
@@ -495,12 +531,6 @@ export class StreamClient {
     }
   }
 
-  private computeBackoff(attempt: number): number {
-    const base = this.initialBackoffMs * Math.pow(this.backoffFactor, attempt);
-    const capped = Math.min(base, this.maxBackoffMs);
-    const jitter = capped * this.jitterRatio * (Math.random() * 2 - 1);
-    return Math.max(0, Math.round(capped + jitter));
-  }
 }
 
 export default StreamClient;

@@ -210,3 +210,11 @@ export {
   type OperationDescription,
   type OperationDirection,
 } from "./stellar/operation-history.js";
+export {
+  LumenError,
+  PolicyDeniedError,
+  NetworkError,
+  SignerError,
+  type LumenErrorCode,
+  type LumenErrorOptions,
+} from "./errors.js";

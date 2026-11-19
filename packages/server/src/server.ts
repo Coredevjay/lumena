@@ -29,6 +29,11 @@ import { CosignerService } from "./cosigner/service.js";
 import { FeeSponsorService } from "./fee-sponsor/service.js";
 import { PolicyEngine } from "./policy/engine.js";
 import { FailoverStellarClient, type StellarEndpoint } from "./stellar/router.js";
+import {
+  NetworkRegistry,
+  type NetworkConfig,
+  type NetworkRegistryOptions,
+} from "./stellar/network-registry.js";
 import { FraudDetector, type FraudDetectorConfig } from "./security/fraud-detector.js";
 import {
   createTokenBucketRateLimiter,
@@ -97,6 +102,11 @@ export interface ServerResult {
   server: HttpServer;
   /** Stellar/Horizon/RPC client used by server services. */
   client: StellarClient;
+  /**
+   * #519 — tenant-scoped network registry, when configured. Resolves each
+   * tenant/API key to its own Horizon/RPC/passphrase/sponsor configuration.
+   */
+  networkRegistry?: NetworkRegistry;
   /** Latency-aware failover router, when multiple endpoints are configured. */
   stellarRouter?: FailoverStellarClient;
   /** Real-time anomaly/fraud detector used by the co-signer service. */
@@ -262,6 +272,14 @@ export interface ServerOpts {
    */
   sep10?: Sep10Config;
   /**
+   * #519 — multi-network registry. When provided, each tenant/API key resolves
+   * to its own Horizon/RPC/passphrase/sponsor configuration so a single
+   * process can serve testnet and mainnet tenants in isolation. When omitted,
+   * the legacy single-network configuration (`network`/`horizonUrl`/`rpcUrl`)
+   * is used for every request.
+   */
+  networkRegistry?: NetworkRegistry | NetworkRegistryOptions;
+  /**
    * Grace period (ms) used by the shutdown hook to drain in-flight requests.
    * Defaults to 15000.
    */
@@ -380,6 +398,60 @@ export function createServer(opts: ServerOpts): ServerResult {
     horizonUrl: opts.horizonUrl,
     rpcUrl: opts.rpcUrl,
   });
+
+  // #519 — tenant-scoped network registry. When configured, each request
+  // resolves its own NetworkConfig (Horizon/RPC/passphrase/sponsor) from the
+  // authenticated tenant; otherwise the legacy single-network client is used.
+  const networkRegistry: NetworkRegistry | undefined =
+    opts.networkRegistry instanceof NetworkRegistry
+      ? opts.networkRegistry
+      : opts.networkRegistry
+        ? new NetworkRegistry(opts.networkRegistry)
+        : undefined;
+
+  // Per-network StellarClient cache so tenants on the same network share a
+  // client while tenants on different networks never share one.
+  const networkClients = new Map<string, StellarClient>();
+  const getClientForNetwork = (config: NetworkConfig): StellarClient => {
+    const key = `${config.network}|${config.horizonUrl}|${config.rpcUrl}`;
+    let cached = networkClients.get(key);
+    if (!cached) {
+      cached = new StellarClient({
+        network: config.network,
+        horizonUrl: config.horizonUrl,
+        rpcUrl: config.rpcUrl,
+      });
+      networkClients.set(key, cached);
+    }
+    return cached;
+  };
+
+  /**
+   * Resolves the network configuration for a request. When a registry is
+   * configured, the tenant id (set by the tenant auth middleware) selects the
+   * network; unknown tenants fall back to the default network. When no
+   * registry is configured, the legacy single-network client is returned.
+   */
+  const resolveNetworkForRequest = (
+    req: Request,
+  ): { config: NetworkConfig; client: StellarClient } => {
+    if (!networkRegistry) {
+      return {
+        config: {
+          network: client.config.network,
+          horizonUrl: client.config.horizonUrl,
+          rpcUrl: client.config.rpcUrl,
+          networkPassphrase: client.networkPassphrase,
+          sponsorPublicKey: opts.feePayerSigner.publicKey(),
+        },
+        client,
+      };
+    }
+
+    const tenant = (req as Request & { tenant?: { id?: string } }).tenant;
+    const config = networkRegistry.resolve(tenant?.id);
+    return { config, client: getClientForNetwork(config) };
+  };
 
   // #240 — latency-aware failover router across multiple Horizon/RPC endpoints.
   let stellarRouter: FailoverStellarClient | undefined;
@@ -663,9 +735,13 @@ return 1
   };
 
   const idempotency = createIdempotencyMiddleware({ redis: opts.redis });
+  // #519 — anti-replay keys are scoped by the resolved network passphrase so
+  // a replay on one network cannot collide with a different network's keys.
   const antiReplay = createAntiReplayMiddleware({
     redis: opts.redis,
     networkPassphrase: client.networkPassphrase,
+    resolveNetworkPassphrase: (req: Request) =>
+      resolveNetworkForRequest(req).config.networkPassphrase,
   });
   const rbac = createRbacMiddleware(opts.rbac);
 
@@ -695,10 +771,12 @@ return 1
 
   app.get(
     "/health",
-    wrapHandler(async (_req, res) => {
+    wrapHandler(async (req, res) => {
+      // #519 — probe the network resolved for this request's tenant.
+      const { config: requestNetwork, client: requestClient } = resolveNetworkForRequest(req);
       let horizonConnected = false;
       try {
-        await client.horizon.root();
+        await requestClient.horizon.root();
         horizonConnected = true;
       } catch {
         horizonConnected = false;
@@ -721,7 +799,7 @@ return 1
         status: healthy ? "ok" : "degraded",
         horizonConnected,
         dependencies,
-        network: client.config.network,
+        network: requestNetwork.network,
         version: getPackageVersion(),
       });
     }),
@@ -809,8 +887,11 @@ return 1
           throw new ValidationError("Validation failed", parsed.error.flatten().fieldErrors);
         }
 
+        // #519 — resolve the tenant's network so the passphrase used to parse
+        // and hash the transaction matches the network it was built for.
+        const { config: requestNetwork } = resolveNetworkForRequest(req);
         const result = await cosignerService.cosign(parsed.data);
-        const transactionHash = getTransactionHash(parsed.data.xdr, client.networkPassphrase);
+        const transactionHash = getTransactionHash(parsed.data.xdr, requestNetwork.networkPassphrase);
         await auditLog.append({
           txHash: transactionHash,
           walletAddress: parsed.data.walletAddress,
@@ -820,7 +901,7 @@ return 1
 
         if (!result.approved) {
           cosignRequestsTotal.inc({ status: "rejected" });
-          const transaction = TransactionBuilder.fromXDR(parsed.data.xdr, client.networkPassphrase);
+          const transaction = TransactionBuilder.fromXDR(parsed.data.xdr, requestNetwork.networkPassphrase);
           const txHash = transaction.hash().toString("hex");
           broadcastAuditEvent({
             timestamp: new Date().toISOString(),
@@ -837,7 +918,7 @@ return 1
         }
 
         cosignRequestsTotal.inc({ status: "approved" });
-        const transaction = TransactionBuilder.fromXDR(parsed.data.xdr, client.networkPassphrase);
+        const transaction = TransactionBuilder.fromXDR(parsed.data.xdr, requestNetwork.networkPassphrase);
         const txHash = transaction.hash().toString("hex");
         broadcastAuditEvent({
           timestamp: new Date().toISOString(),
@@ -871,11 +952,12 @@ return 1
         throw new ValidationError("Validation failed", parsed.error.flatten().fieldErrors);
       }
 
+      const { config: requestNetwork } = resolveNetworkForRequest(req);
       const results = await cosignerService.cosignBatch(parsed.data.transactions);
       await Promise.all(
         parsed.data.transactions.map((transaction, index) =>
           auditLog.append({
-            txHash: getTransactionHash(transaction.xdr, client.networkPassphrase),
+            txHash: getTransactionHash(transaction.xdr, requestNetwork.networkPassphrase),
             walletAddress: transaction.walletAddress,
             decision: results[index]?.approved ? "approved" : "rejected",
             rulesEvaluated: results[index]?.rulesEvaluated ?? [],
@@ -946,10 +1028,11 @@ return 1
         throw new ValidationError("Validation failed", parsed.error.flatten().fieldErrors);
       }
 
+      const { config: requestNetwork } = resolveNetworkForRequest(req);
       const result = await feeSponsorService.submit(parsed.data.xdr);
       const submittedTransaction = TransactionBuilder.fromXDR(
         parsed.data.xdr,
-        client.networkPassphrase,
+        requestNetwork.networkPassphrase,
       );
       if (submittedTransaction instanceof Transaction) {
         broadcastWalletEvent(submittedTransaction.source, "submitted", { hash: result.hash });
@@ -1214,11 +1297,14 @@ return 1
           throw new ValidationError("ownerPublicKey must be a valid Stellar public key");
         }
 
-        const sponsor = Keypair.fromPublicKey(opts.feePayerSigner.publicKey());
-        const sponsorAccount = await client.horizon.loadAccount(sponsor.publicKey());
+        const { config: requestNetwork, client: requestClient } = resolveNetworkForRequest(req);
+        const sponsor = Keypair.fromPublicKey(
+          requestNetwork.sponsorPublicKey ?? opts.feePayerSigner.publicKey(),
+        );
+        const sponsorAccount = await requestClient.horizon.loadAccount(sponsor.publicKey());
         const createTx = new TransactionBuilder(sponsorAccount, {
           fee: BASE_FEE,
-          networkPassphrase: client.networkPassphrase,
+          networkPassphrase: requestNetwork.networkPassphrase,
         })
           .addOperation(
             Operation.createAccount({
@@ -1235,7 +1321,7 @@ return 1
             signature: Buffer.from(signature),
           }),
         );
-        await client.horizon.submitTransaction(createTx);
+        await requestClient.horizon.submitTransaction(createTx);
 
         if (opts.walletRegistry) {
           await opts.walletRegistry.register(ownerPublicKey);
@@ -1255,9 +1341,10 @@ return 1
 
       const { Wallet } = await import("@lumen/core");
 
+      const { config: requestNetwork, client: requestClient } = resolveNetworkForRequest(req);
       const sponsorKeypair = Keypair.fromPublicKey(opts.cosignerSigner.publicKey());
       const wallet = new Wallet({
-        client,
+        client: requestClient,
         sponsorKeypair,
         serverPublicKey: opts.cosignerSigner.publicKey(),
       });
@@ -1338,7 +1425,8 @@ return 1
         throw new ValidationError("cursor must be a string");
       }
 
-      let transactions = client.horizon
+      const { client: requestClient } = resolveNetworkForRequest(req);
+      let transactions = requestClient.horizon
         .transactions()
         .forAccount(address)
         .order("desc")
@@ -1364,7 +1452,8 @@ return 1
         throw new ValidationError("address must be a valid Stellar public key");
       }
 
-      const account = await client.horizon.loadAccount(address);
+      const { client: requestClient } = resolveNetworkForRequest(req);
+      const account = await requestClient.horizon.loadAccount(address);
       res.json({ address, balances: account.balances });
     }),
   );
@@ -1492,7 +1581,15 @@ return 1
   );
 
   // GraphQL gateway (queries + SSE subscriptions) served alongside the REST endpoints.
-  const graphqlGateway = createGraphQLGateway({ client, policyEngine });
+  // #519 — when a network registry is configured, the gateway resolves the
+  // tenant's network per request instead of using the legacy single client.
+  const graphqlGateway = createGraphQLGateway({
+    client,
+    policyEngine,
+    resolveClient: networkRegistry
+      ? (req: Request) => resolveNetworkForRequest(req).client
+      : undefined,
+  });
   app.use(graphqlGateway.graphqlEndpoint, graphqlGateway);
 
   app.use(errorHandler);
@@ -1698,7 +1795,14 @@ return 1
   ledgerIngestionWorker?.start();
 
   server.listen(port, () => {
-    logger.info({ port, network: client.config.network }, `Lumen server listening on port ${port}`);
+    logger.info(
+      {
+        port,
+        network: client.config.network,
+        networks: networkRegistry ? networkRegistry.list().map((n) => n.network) : undefined,
+      },
+      `Lumen server listening on port ${port}`,
+    );
     logger.info(
       { cosigner: opts.cosignerSigner.publicKey(), feePayer: opts.feePayerSigner.publicKey() },
       "Signer addresses initialized",
@@ -1763,6 +1867,7 @@ return 1
     app,
     server,
     client,
+    networkRegistry,
     stellarRouter,
     fraudDetector,
     cosignerService,

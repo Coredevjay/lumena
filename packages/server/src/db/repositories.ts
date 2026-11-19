@@ -118,6 +118,7 @@ interface PrismaTenantRow {
   monthlyGasUsedXlm: string;
   quotaResetAt: Date;
   allowedDomains: unknown;
+  network: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -216,6 +217,7 @@ function mapTenantRowToTenant(row: PrismaTenantRow): Tenant {
     allowedDomains: Array.isArray(row.allowedDomains)
       ? (row.allowedDomains as string[])
       : [],
+    network: row.network ?? undefined,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -486,13 +488,20 @@ export class PrismaWalletRegistry implements WalletRegistry {
     return row ? mapWalletRowToWallet(row as unknown as PrismaWalletRow) : null;
   }
 
-  async getWalletByAddress(address: string): Promise<Wallet | null> {
-    const row = await this.prisma.wallet.findUnique({ where: { address } });
+  async getWalletByAddress(address: string, network?: string): Promise<Wallet | null> {
+    // Wallet addresses are only unique per network, so scope the lookup by
+    // network when one is provided to avoid mixing testnet/mainnet wallets.
+    const row = network
+      ? await this.prisma.wallet.findFirst({ where: { address, network } })
+      : await this.prisma.wallet.findUnique({ where: { address } });
     return row ? mapWalletRowToWallet(row as unknown as PrismaWalletRow) : null;
   }
 
-  async listWallets(): Promise<Wallet[]> {
-    const rows = await this.prisma.wallet.findMany({ orderBy: { createdAt: 'asc' } });
+  async listWallets(network?: string): Promise<Wallet[]> {
+    const rows = await this.prisma.wallet.findMany({
+      where: network ? { network } : undefined,
+      orderBy: { createdAt: 'asc' },
+    });
     return rows.map((row) => mapWalletRowToWallet(row as unknown as PrismaWalletRow));
   }
 
@@ -550,6 +559,7 @@ export class PrismaTenantStore implements TenantStore {
         monthlyGasUsedXlm: tenant.monthlyGasUsedXlm ?? '0',
         quotaResetAt: new Date(tenant.quotaResetAt),
         allowedDomains: tenant.allowedDomains ?? [],
+        network: tenant.network ?? null,
       },
       update: {
         name: tenant.name,
@@ -557,6 +567,7 @@ export class PrismaTenantStore implements TenantStore {
         tier: tenant.tier,
         monthlyGasQuotaXlm: tenant.monthlyGasQuotaXlm,
         allowedDomains: tenant.allowedDomains ?? [],
+        network: tenant.network ?? null,
       },
     });
     return mapTenantRowToTenant(row as unknown as PrismaTenantRow);
@@ -572,8 +583,11 @@ export class PrismaTenantStore implements TenantStore {
     return row ? mapTenantRowToTenant(row as unknown as PrismaTenantRow) : null;
   }
 
-  async listTenants(): Promise<Tenant[]> {
-    const rows = await this.prisma.tenant.findMany({ orderBy: { createdAt: 'asc' } });
+  async listTenants(network?: string): Promise<Tenant[]> {
+    const rows = await this.prisma.tenant.findMany({
+      where: network ? { network } : undefined,
+      orderBy: { createdAt: 'asc' },
+    });
     return rows.map((row) => mapTenantRowToTenant(row as unknown as PrismaTenantRow));
   }
 

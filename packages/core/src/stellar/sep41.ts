@@ -6,6 +6,14 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import type { StellarClient } from "./client.js";
+import { withRetry, type RetryOptions } from "../utils/retry.js";
+
+export interface Sep41CallOptions {
+  /** AbortSignal to cancel the RPC call and any pending retries. */
+  signal?: AbortSignal;
+  /** Override retry/backoff behaviour for this call. */
+  retry?: RetryOptions;
+}
 
 export class Sep41Token {
   readonly contractId: string;
@@ -91,16 +99,23 @@ export class Sep41Token {
 
   /**
    * Queries balance of an address by calling/simulating the balance method on Soroban RPC.
+   *
+   * Retries transient RPC failures using the shared exponential-backoff helper
+   * and honours the optional `signal` for cancellation.
    */
-  async balance(address: string): Promise<bigint> {
+  async balance(address: string, options: Sep41CallOptions = {}): Promise<bigint> {
     if (!this.client) {
       throw new Error("StellarClient instance required for balance RPC call");
     }
 
     const op = this.buildBalanceOperation(address);
-    const simResult = await this.client.rpc.simulateTransaction({
-      operations: [op],
-    } as any);
+    const simResult = await withRetry(
+      () =>
+        this.client!.rpc.simulateTransaction({
+          operations: [op],
+        } as any),
+      { ...options.retry, signal: options.signal }
+    );
 
     return Sep41Token.parseBalanceResponse(simResult);
   }

@@ -46,6 +46,7 @@ import type { SequenceAllocator } from "./fee-sponsor/sequence-allocator.js";
 import {
   CosignRequestSchema,
   CosignBatchRequestSchema,
+  CosignAuthEntryRequestSchema,
   FeeBumpRequestSchema,
   PolicyRequestSchema,
   WebhookRequestSchema,
@@ -674,6 +675,26 @@ return 1
 
       const responseResults = results.map(({ rulesEvaluated: _rulesEvaluated, ...result }) => result);
       res.status(allApproved ? 200 : 207).json({ results: responseResults });
+    }),
+  );
+
+  // #587 — co-sign Soroban authorization entries with contract allowlist checks.
+  app.post(
+    "/cosign/auth-entry",
+    rateLimiter,
+    antiReplay,
+    wrapHandler(async (req: Request, res: Response) => {
+      const parsed = CosignAuthEntryRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ValidationError("Validation failed", parsed.error.flatten().fieldErrors);
+      }
+
+      const result = await cosignerService.cosignAuthEntry(parsed.data);
+      if (!result.approved) {
+        throw new PolicyError(result.reason ?? "Authorization entry denied by policy");
+      }
+
+      res.json({ signedEntryXdr: result.signedEntryXdr });
     }),
   );
 

@@ -230,12 +230,21 @@ export interface RateLimitConfig {
 }
 
 /**
+ * Express `trust proxy` setting. Either a hop count (number of trusted
+ * reverse-proxy hops in front of the server) or an explicit list of trusted
+ * proxy CIDR ranges / addresses. `false` means proxy headers are ignored and
+ * the socket peer address is used (safe default).
+ */
+export type TrustProxyConfig = false | number | string[];
+
+/**
  * Fully resolved server configuration.
  */
 export interface ServerConfig {
   corsOrigins: string[];
   logLevel: LogLevel;
   rateLimits: RateLimitConfig;
+  trustProxy: TrustProxyConfig;
   apiKey?: string;
   credentialsEnabled: boolean;
 }
@@ -345,6 +354,81 @@ function parseLogLevel(raw: string | undefined): ConfigResult<LogLevel> {
   return { ok: true, value: level as LogLevel };
 }
 
+const IPV4_CIDR = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\/(\d{1,2}))?$/;
+const IPV6_CIDR = /^[0-9a-fA-F:]+(?:\/(\d{1,3}))?$/;
+
+function isValidIpOrCidr(entry: string): boolean {
+  const ipv4 = IPV4_CIDR.exec(entry);
+  if (ipv4) {
+    const octets = ipv4.slice(1, 5).map(Number);
+    if (octets.some((o) => o > 255)) {
+      return false;
+    }
+    const prefix = ipv4[5] === undefined ? 32 : Number(ipv4[5]);
+    return prefix >= 0 && prefix <= 32;
+  }
+  const ipv6 = IPV6_CIDR.exec(entry);
+  if (ipv6) {
+    if (!entry.includes(":")) {
+      return false;
+    }
+    const prefix = ipv6[1] === undefined ? 128 : Number(ipv6[1]);
+    return prefix >= 0 && prefix <= 128;
+  }
+  return false;
+}
+
+/**
+ * Parse `TRUST_PROXY` into an Express `trust proxy` value.
+ *
+ *   unset / "false" / "0"  → false (ignore X-Forwarded-For; safe default)
+ *   "true"                 → rejected: trusting every hop lets any client spoof
+ *                            its IP and bypass rate limiting
+ *   positive integer N     → trust the N closest proxy hops
+ *   comma-separated CIDRs  → trust only those proxy addresses/ranges
+ */
+export function parseTrustProxy(raw: string | undefined): ConfigResult<TrustProxyConfig> {
+  if (raw === undefined || raw.trim() === "") {
+    return { ok: true, value: false };
+  }
+
+  const value = raw.trim();
+  const lower = value.toLowerCase();
+  if (lower === "false" || lower === "0") {
+    return { ok: true, value: false };
+  }
+  if (lower === "true") {
+    return {
+      ok: false,
+      error:
+        'TRUST_PROXY="true" is unsafe: it trusts any client-supplied X-Forwarded-For. ' +
+        "Use a hop count (e.g. 1) or a comma-separated CIDR list instead",
+    };
+  }
+
+  if (/^\d+$/.test(value)) {
+    const hops = Number(value);
+    if (hops <= 0) {
+      return { ok: true, value: false };
+    }
+    return { ok: true, value: hops };
+  }
+
+  const entries = value
+    .split(",")
+    .map((e) => e.trim())
+    .filter((e) => e.length > 0);
+  if (entries.length === 0) {
+    return { ok: true, value: false };
+  }
+  for (const entry of entries) {
+    if (!isValidIpOrCidr(entry)) {
+      return { ok: false, error: `invalid proxy address or CIDR: "${entry}"` };
+    }
+  }
+  return { ok: true, value: entries };
+}
+
 function parseRateLimits(env: NodeJS.ProcessEnv): ConfigResult<RateLimitConfig> {
   const windowMs = parsePositiveInt(env.RATE_LIMIT_WINDOW_MS, DEFAULT_RATE_LIMIT.windowMs);
   if (!windowMs.ok) {
@@ -407,10 +491,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const apiKey = env.API_KEY && env.API_KEY.length > 0 ? env.API_KEY : undefined;
   const credentialsEnabled = env.CREDENTIALS_ENABLED === "true";
 
+  const trustProxy = parseTrustProxy(env.TRUST_PROXY);
+  if (!trustProxy.ok) {
+    throw new Error(`TRUST_PROXY: ${trustProxy.error}`);
+  }
+
   const cfg: ServerConfig = {
     corsOrigins: corsOrigins.value,
     logLevel: logLevel.value,
     rateLimits: rateLimits.value,
+    trustProxy: trustProxy.value,
     apiKey,
     credentialsEnabled,
   };

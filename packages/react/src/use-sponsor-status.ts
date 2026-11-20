@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback } from "react";
+import { useAsyncResource } from "./use-async-resource.js";
 
 export interface SponsorStatus {
   balance: number;
@@ -30,58 +31,34 @@ export function useSponsorStatus(
 ): UseSponsorStatusResult {
   const {
     pollInterval = DEFAULT_POLL_INTERVAL,
-    baseUrl = '',
+    baseUrl = "",
     fetcher,
   } = options;
 
-  const [status, setStatus] = useState<SponsorStatus | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [error, setError] = useState<Error | null>(null);
-
-  const mountedRef = useRef(true);
-
-  const fetchStatus = useCallback(async () => {
-    setIsLoading(true);
-    try {
+  const fetchStatus = useCallback(
+    async (_signal: AbortSignal): Promise<SponsorStatus> => {
       const doFetch = fetcher ?? fetch;
-      const response = await doFetch(`${baseUrl}/sponsor/status`);
+      const response = await doFetch(`${baseUrl}/sponsor/status`, { signal: _signal });
       if (!response.ok) {
         throw new Error(
           `Failed to fetch sponsor status: ${response.status} ${response.statusText}`,
         );
       }
-      const data = (await response.json()) as SponsorStatus;
-      if (!mountedRef.current) return;
-      setStatus(data);
-      setError(null);
-    } catch (err) {
-      if (!mountedRef.current) return;
-      setError(err instanceof Error ? err : new Error(String(err)));
-    } finally {
-      if (mountedRef.current) {
-        setIsLoading(false);
-      }
-    }
-  }, [baseUrl, fetcher]);
+      return (await response.json()) as SponsorStatus;
+    },
+    [baseUrl, fetcher],
+  );
 
-  useEffect(() => {
-    mountedRef.current = true;
-    void fetchStatus();
+  const { data, isLoading, error, refetch } = useAsyncResource({
+    fetcher: fetchStatus,
+    pollInterval,
+    refetchOnFocus: true,
+  });
 
-    if (pollInterval > 0) {
-      const timer = setInterval(() => {
-        void fetchStatus();
-      }, pollInterval);
-      return () => {
-        mountedRef.current = false;
-        clearInterval(timer);
-      };
-    }
-
-    return () => {
-      mountedRef.current = false;
-    };
-  }, [fetchStatus, pollInterval]);
-
-  return { status, isLoading, error, refetch: fetchStatus };
+  return {
+    status: data ?? null,
+    isLoading,
+    error,
+    refetch,
+  };
 }

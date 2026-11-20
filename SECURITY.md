@@ -30,6 +30,12 @@ Lumen wallets are designed around the following controls:
 
 These controls reduce the impact of a compromised component, but they do not eliminate the need to protect user devices, passkeys, hosting, network endpoints, and signing credentials. See [docs/threat-model.md](docs/threat-model.md) for a detailed analysis of assets, actors, trust boundaries, attack scenarios, and mitigations for the cosigner/server architecture.
 
+Integrators should follow the checklists in
+[docs/guides/security-best-practices.md](docs/guides/security-best-practices.md),
+which cover passkey RP ID and origin binding, Content-Security-Policy
+headers, network constants, session state storage, and co-signer, fee-payer,
+and API key handling.
+
 ## In scope
 
 Reports are in scope when they demonstrate a vulnerability in Lumen code or infrastructure, including:

@@ -15,6 +15,11 @@ soroban-sdk = { version = "21.0.0" }
 
 [dev-dependencies]
 soroban-sdk = { version = "21.0.0", features = ["testutils"] }
+proptest = "1"
+
+[[test]]
+name = "fuzz"
+path = "__tests__/fuzz/main.rs"
 
 [features]
 testutils = ["soroban-sdk/testutils"]
@@ -45,6 +50,15 @@ pub enum DataKey {
 }
 
 /// Default lock symbol used by the guard when no explicit key is provided.
+///
+/// # Examples
+///
+/// ```
+/// use security_utils::default_lock_key;
+/// use soroban_sdk::symbol_short;
+///
+/// assert_eq!(default_lock_key(), symbol_short!("re_lock"));
+/// ```
 pub fn default_lock_key() -> Symbol {
     symbol_short!("re_lock")
 }
@@ -54,6 +68,30 @@ pub fn default_lock_key() -> Symbol {
 /// The lock is stored in temporary storage keyed by a [`Symbol`]. `enter`
 /// sets the lock and returns [`ContractError::ReentrancyDetected`] if it is
 /// already set. `exit` clears the lock.
+///
+/// # Examples
+///
+/// ```
+/// use security_utils::{ContractError, ReentrancyGuard};
+/// use soroban_sdk::{contract, contractimpl, Env};
+///
+/// #[contract]
+/// pub struct Guarded;
+///
+/// #[contractimpl]
+/// impl ReentrancyGuard for Guarded {}
+///
+/// #[contractimpl]
+/// impl Guarded {
+///     pub fn run(env: Env) -> Result<(), ContractError> {
+///         <Self as ReentrancyGuard>::enter(&env)?;
+///         assert!(<Self as ReentrancyGuard>::is_locked(&env));
+///         <Self as ReentrancyGuard>::exit(&env);
+///         assert!(!<Self as ReentrancyGuard>::is_locked(&env));
+///         Ok(())
+///     }
+/// }
+/// ```
 pub trait ReentrancyGuard {
     /// Acquire the lock. Errors with `ReentrancyDetected` if already held.
     fn enter(env: &Env) -> Result<(), ContractError> {
@@ -96,6 +134,22 @@ pub trait ReentrancyGuard {
 /// Assert that an invariant holds. Panics (via `InvariantViolated`) if not.
 ///
 /// Intended to be called before and after external invocation blocks.
+///
+/// # Examples
+///
+/// ```
+/// use security_utils::assert_invariant;
+///
+/// assert_invariant(1 + 1 == 2);
+/// ```
+///
+/// A violated invariant panics:
+///
+/// ```should_panic
+/// use security_utils::assert_invariant;
+///
+/// assert_invariant(false);
+/// ```
 pub fn assert_invariant(condition: bool) {
     if !condition {
         panic_with_error_invariant();
@@ -103,6 +157,15 @@ pub fn assert_invariant(condition: bool) {
 }
 
 /// Assert that an invariant holds, returning a `Result` instead of panicking.
+///
+/// # Examples
+///
+/// ```
+/// use security_utils::{check_invariant, ContractError};
+///
+/// assert_eq!(check_invariant(true), Ok(()));
+/// assert_eq!(check_invariant(false), Err(ContractError::InvariantViolated));
+/// ```
 pub fn check_invariant(condition: bool) -> Result<(), ContractError> {
     if condition {
         Ok(())
@@ -127,6 +190,27 @@ fn panic_with_error_invariant() -> ! {
 /// pub fn transfer(env: Env, to: Address, amount: i128) -> Result<(), ContractError> {
 ///     // body
 ///     Ok(())
+/// }
+/// ```
+///
+/// # Examples
+///
+/// ```
+/// use security_utils::{reentrancy_guard, ContractError, ReentrancyGuard};
+/// use soroban_sdk::{contract, contractimpl, Env};
+///
+/// #[contract]
+/// pub struct Guarded;
+///
+/// #[contractimpl]
+/// impl ReentrancyGuard for Guarded {}
+///
+/// #[contractimpl]
+/// impl Guarded {
+///     #[reentrancy_guard]
+///     pub fn double(env: Env, value: u32) -> Result<u32, ContractError> {
+///         Ok(value * 2)
+///     }
 /// }
 /// ```
 #[macro_export]
@@ -159,6 +243,9 @@ macro_rules! reentrancy_guard {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod property_tests;
 ```
 
 src/test.rs:

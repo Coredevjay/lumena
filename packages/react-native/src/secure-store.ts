@@ -5,9 +5,18 @@ const INDEX_KEY = "lumen_key_storage_index_v1";
 const ITEM_PREFIX = "lumen_key_storage_item_";
 
 export interface SecureStoreAdapter {
-  getItemAsync(key: string): Promise<string | null>;
-  setItemAsync(key: string, value: string): Promise<void>;
+  getItemAsync(key: string, options?: { requireAuthentication?: boolean }): Promise<string | null>;
+  setItemAsync(
+    key: string,
+    value: string,
+    options?: { requireAuthentication?: boolean },
+  ): Promise<void>;
   deleteItemAsync(key: string): Promise<void>;
+}
+
+export interface SecureStoreKeyStorageOptions {
+  /** Require biometrics (or device credential) before reading signing keys. */
+  requireBiometrics?: boolean;
 }
 
 /**
@@ -24,8 +33,18 @@ export class ExpoSecureStoreKeyStorage implements KeyStorage {
   private pendingWrites: Promise<void> = Promise.resolve();
   private persistenceError: Error | undefined;
 
-  constructor(secureStore: SecureStoreAdapter = SecureStore) {
+  private readonly requireBiometrics: boolean;
+
+  constructor(
+    secureStore: SecureStoreAdapter = SecureStore,
+    options: SecureStoreKeyStorageOptions = {},
+  ) {
     this.secureStore = secureStore;
+    this.requireBiometrics = options.requireBiometrics ?? false;
+  }
+
+  private authOptions() {
+    return this.requireBiometrics ? { requireAuthentication: true } : undefined;
   }
 
   get length(): number {
@@ -65,7 +84,7 @@ export class ExpoSecureStoreKeyStorage implements KeyStorage {
     }
 
     for (const key of keys) {
-      const value = await this.secureStore.getItemAsync(this.itemKey(key));
+      const value = await this.secureStore.getItemAsync(this.itemKey(key), this.authOptions());
       if (value !== null) {
         this.values.set(key, value);
         this.keys.push(key);

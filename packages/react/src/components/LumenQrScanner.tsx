@@ -168,6 +168,8 @@ export function LumenQrScanner({
   const [flashSupported, setFlashSupported] = useState<boolean>(false);
   const [active, setActive] = useState<boolean>(false);
   const [error, setError] = useState<Error | null>(null);
+  const [manualInput, setManualInput] = useState('');
+  const [showManualFallback, setShowManualFallback] = useState(false);
 
   // Expose the scanning state under the name used by consumers/tests.
   const isScanning = active;
@@ -181,10 +183,26 @@ export function LumenQrScanner({
     (err: unknown) => {
       const e = err instanceof Error ? err : new Error(String(err));
       setError(e);
+      if (
+        e.name === 'NotAllowedError' ||
+        /permission|denied|not supported/i.test(e.message)
+      ) {
+        setShowManualFallback(true);
+      }
       onError?.(e);
     },
     [onError],
   );
+
+  const submitManual = useCallback(() => {
+    try {
+      const result = parseQrPayload(manualInput);
+      setError(null);
+      onScan(result);
+    } catch (err) {
+      handleError(err);
+    }
+  }, [handleError, manualInput, onScan]);
 
   const stopStream = useCallback(() => {
     if (rafRef.current !== null) {
@@ -509,8 +527,39 @@ export function LumenQrScanner({
       {error && (
         <div data-testid="lumen-qr-error" role="alert" style={{ color: 'red', marginTop: 8 }}>
           {error.message}
+          {showManualFallback && (
+            <p style={{ marginTop: 8 }}>
+              Camera access was denied or is unavailable. Paste a Stellar address or payment URI
+              below instead.
+            </p>
+          )}
         </div>
       )}
+
+      <div
+        data-testid="lumen-qr-manual-entry"
+        style={{ marginTop: 12 }}
+        role="region"
+        aria-label="Enter address manually"
+      >
+        <label htmlFor="lumen-qr-manual-input" style={{ display: 'block', marginBottom: 4 }}>
+          Paste Stellar address or payment URI
+        </label>
+        <input
+          id="lumen-qr-manual-input"
+          type="text"
+          value={manualInput}
+          onChange={(e) => setManualInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') submitManual();
+          }}
+          style={{ width: '100%', padding: 8 }}
+          placeholder="G… or web+stellar:pay"
+        />
+        <button type="button" onClick={submitManual} style={{ marginTop: 8 }}>
+          Use address
+        </button>
+      </div>
     </div>
   );
 }

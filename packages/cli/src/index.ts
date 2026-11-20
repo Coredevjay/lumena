@@ -3,6 +3,8 @@ import { Horizon, TransactionBuilder } from "@stellar/stellar-sdk";
 import fs from "node:fs";
 import { createInitCommand } from "./commands/init";
 import { createWalletCommand } from "./commands/wallet";
+import { createDoctorCommand } from "./commands/doctor";
+import { createPolicyApplyCommand } from "./commands/policy-apply";
 
 const program = new Command();
 
@@ -84,7 +86,10 @@ registerContractCommand(program, {
   horizonUrls: HORIZON_URLS,
 });
 
+program.addCommand(createDoctorCommand(DEFAULT_SERVER_URL, isJsonOutput));
+
 const policyCmd = program.command("policy").description("Manage wallet policy rules");
+policyCmd.addCommand(createPolicyApplyCommand(DEFAULT_SERVER_URL, isJsonOutput));
 
 policyCmd
   .command("get <walletId>")

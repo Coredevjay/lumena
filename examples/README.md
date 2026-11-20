@@ -1,5 +1,7 @@
 # Lumen Examples
 
+The root package is named `lumen` and uses `pnpm -r` for workspace scripts.
+
 Runnable examples for the Lumen SDKs. Run every command from the repository
 root after `pnpm install`.
 

@@ -9,6 +9,12 @@ import type {
   WebhookDeliveryLogEntry,
 } from "@lumen/types";
 import { logger } from "../logger.js";
+import {
+  assertSafeWebhookUrl,
+  safeWebhookFetch,
+  type DnsResolver,
+  type WebhookUrlGuardOpts,
+} from "./ssrf.js";
 
 /**
  * Retry schedule for the persistent (BullMQ) delivery pipeline.
@@ -126,6 +132,11 @@ export interface WebhookDispatcherOpts {
    * delivery log (entries marked `deadLettered`).
    */
   deadLetterRepository?: WebhookDeadLetterRepository;
+  /**
+   * SSRF guard options for webhook destination URLs. `allowInsecureHttp` and
+   * `allowPrivateNetworks` are development-only escape hatches.
+   */
+  ssrf?: WebhookUrlGuardOpts;
 }
 
 /**

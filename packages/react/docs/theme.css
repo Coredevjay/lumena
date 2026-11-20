@@ -1,0 +1,18 @@
+/**
+ * Lumen CSS theme variables (defaults). Override on `.lumen-root` or `:root`.
+ * Generated from packages/react/src/theme/tokens.ts — keep in sync when tokens change.
+ */
+.lumen-root {
+  --lumen-primary: #4f46e5;
+  --lumen-primary-contrast: #ffffff;
+  --lumen-card-bg: #ffffff;
+  --lumen-text: #111827;
+  --lumen-text-muted: #6b7280;
+  --lumen-border: #e5e7eb;
+  --lumen-error: #dc2626;
+  --lumen-overlay: rgba(0, 0, 0, 0.5);
+  --lumen-radius: 12px;
+  --lumen-radius-sm: 8px;
+  --lumen-font-family: inherit;
+  --lumen-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
+}

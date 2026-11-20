@@ -28,6 +28,8 @@ export type { UseWalletResult } from "./use-wallet.js";
 export { useCreateWallet } from "./use-create-wallet.js";
 export type { CreateWalletResult, UseCreateWalletResult } from "./use-create-wallet.js";
 
+export { LumenTxReview } from "./components/LumenTxReview.js";
+export type { LumenTxReviewProps } from "./components/LumenTxReview.js";
 export { useBalance } from "./use-balance.js";
 export type { UseBalanceResult } from "./use-balance.js";
 

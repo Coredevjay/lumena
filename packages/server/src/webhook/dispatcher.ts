@@ -8,6 +8,7 @@ import type {
   WebhookDeliveryResult,
   WebhookDeliveryLogEntry,
 } from "@lumen/types";
+import { WEBHOOK_PAYLOAD_SCHEMA_VERSION } from "@lumen/types";
 import { logger } from "../logger.js";
 
 /**
@@ -245,6 +246,7 @@ export class WebhookDispatcher {
     if (!wh) throw new Error(`Webhook not found: ${id}`);
 
     const payload = {
+      schemaVersion: WEBHOOK_PAYLOAD_SCHEMA_VERSION,
       id: randomUUID(),
       event: "test.ping" as WebhookEventType,
       timestamp: new Date().toISOString(),
@@ -562,6 +564,7 @@ export class WebhookDispatcher {
 
   createPayload<T>(event: WebhookEventType, data: T): WebhookPayload<T> {
     return {
+      schemaVersion: WEBHOOK_PAYLOAD_SCHEMA_VERSION,
       id: randomUUID(),
       event,
       timestamp: new Date().toISOString(),

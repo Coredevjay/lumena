@@ -74,7 +74,11 @@ pnpm audit --json
 
 ## Security Best Practices for Integrators
 
-Because Lumen manages cryptographic keys and co-signs financial transactions, we recommend the following practices for production deployments:
+Because Lumen manages cryptographic keys and co-signs financial transactions, we recommend the following practices for production deployments. The full, current checklists live in
+[guides/security-best-practices.md](./guides/security-best-practices.md)
+(passkey RP ID and origin binding, CSP, network constants, session state
+storage, and co-signer, fee-payer, and API key handling); the list below is a
+summary.
 
 ### 1. Protect the Co-Signer and Fee-Payer Keys
 

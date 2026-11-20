@@ -77,6 +77,7 @@ export default defineConfig({
             { label: 'Policy Configuration', slug: 'policy-configuration' },
             { label: 'Production Key Management', slug: 'production-key-management' },
             { label: 'Webhooks', slug: 'webhooks' },
+            { label: 'API Changelog', slug: 'api-changelog' },
           ],
         },
         {

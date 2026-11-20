@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
+    contract, contracterror, contractimpl, contracttype, token, Address, Env, Symbol,
 };
 
 #[contracttype]
@@ -151,9 +151,12 @@ impl Paymaster {
             .persistent()
             .set(&spent_key, &(spent + max_fee));
 
-        env.events().publish(
-            (symbol_short!("paymaster"), symbol_short!("sponsor")),
-            (sponsor.clone(), user.clone(), token.clone(), max_fee, epoch),
+        event_schema::publish(
+            &env,
+            Symbol::new(&env, "paymaster"),
+            Symbol::new(&env, "sponsor"),
+            &user,
+            (sponsor, token, max_fee, epoch),
         );
 
         Ok(max_fee)

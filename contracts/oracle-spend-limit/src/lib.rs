@@ -183,9 +183,12 @@ impl OracleSpendLimitContract {
             return Err(Error::SpendLimitExceeded);
         }
 
-        env.events().publish(
-            (symbol_short!("spend_ok"), asset),
-            (amount, usd_value),
+        event_schema::publish(
+            &env,
+            Symbol::new(&env, "oracle_spend_limit"),
+            Symbol::new(&env, "spend_ok"),
+            &env.current_contract_address(),
+            (asset, amount, usd_value),
         );
 
         Ok(usd_value)

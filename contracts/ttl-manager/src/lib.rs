@@ -129,8 +129,11 @@ impl TtlManager {
         }
 
         // Emit an event so off-chain workers can observe the extension.
-        env.events().publish(
-            (symbol_short!("ttl_ext"),),
+        event_schema::publish(
+            &env,
+            Symbol::new(&env, "ttl_manager"),
+            Symbol::new(&env, "ttl_ext"),
+            &env.current_contract_address(),
             (instance_extended, persistent_extended),
         );
 

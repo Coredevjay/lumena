@@ -4,10 +4,10 @@
  * Covers all user-visible strings from prebuilt @lumen/react UI components:
  * LumenBalance, LumenWalletCard, and error/status messages from hooks.
  *
- * Supported locales: en, es, pt, fr, ja
+ * Supported locales: en, es, pt, fr, ja, zh
  */
 
-export type LumenLocale = "en" | "es" | "pt" | "fr" | "ja";
+export type LumenLocale = "en" | "es" | "pt" | "fr" | "ja" | "zh";
 
 export interface LumenTranslations {
   // LumenBalance
@@ -205,6 +205,38 @@ const ja: LumenTranslations = {
   },
 };
 
+const zh: LumenTranslations = {
+  balance: {
+    loading: "正在加载余额…",
+    error: "加载余额失败",
+    refreshLabel: "刷新余额",
+    assetLabel: (assetCode) => assetCode,
+  },
+  walletCard: {
+    cardLabel: (address) => `${address} 的钱包卡片`,
+    addressLabel: (address) => `钱包地址：${address}`,
+    copyButton: "复制钱包地址",
+    copiedButton: "地址已复制",
+    qrCodeLabel: "钱包二维码",
+  },
+  multiSig: {
+    sessionCreating: "正在创建联合签名会话…",
+    sessionPending: "等待第二台设备批准…",
+    sessionApproved: "会话已批准",
+    sessionRejected: "会话已拒绝",
+    sessionExpired: "会话已过期",
+    sessionError: "联合签名会话错误",
+    merging: "正在合并签名…",
+  },
+  errors: {
+    generic: "发生意外错误",
+    network: "网络错误 — 请检查连接",
+    unauthorized: "未授权",
+    walletNotFound: "未找到钱包",
+    policyViolation: "交易被策略拒绝",
+  },
+};
+
 /** All bundled translation dictionaries keyed by locale code. */
 export const translations: Record<LumenLocale, LumenTranslations> = {
   en,
@@ -212,4 +244,5 @@ export const translations: Record<LumenLocale, LumenTranslations> = {
   pt,
   fr,
   ja,
+  zh,
 };

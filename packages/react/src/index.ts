@@ -22,16 +22,24 @@ export type {
 
 export { useIsMounted } from "./hooks/use-is-mounted.js";
 
+export { useAsyncResource, usePolling, useRefetchOnFocus } from "./use-async-resource.js";
+export type { UseAsyncResourceOptions, UseAsyncResourceResult } from "./use-async-resource.js";
+
 export { useWallet } from "./use-wallet.js";
 export type { UseWalletResult } from "./use-wallet.js";
 
 export { useCreateWallet } from "./use-create-wallet.js";
 export type { CreateWalletResult, UseCreateWalletResult } from "./use-create-wallet.js";
 
-export { LumenTxReview } from "./components/LumenTxReview.js";
-export type { LumenTxReviewProps } from "./components/LumenTxReview.js";
+export { useDebouncedAddressValidation } from "./use-debounced-address-validation.js";
+export type {
+  DebouncedAddressValidationResult,
+  UseDebouncedAddressValidationOptions,
+} from "./use-debounced-address-validation.js";
 export { useBalance } from "./use-balance.js";
 export type { UseBalanceResult } from "./use-balance.js";
+export { useBalanceSuspense, useWalletBalance } from "./use-balance-suspense.js";
+export type { UseBalanceOptions } from "./use-balance-suspense.js";
 
 export { useSendPayment } from "./use-send-payment.js";
 export type {

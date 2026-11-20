@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLumenClient } from "./context.js";
+import { useRefetchOnFocus } from "./use-async-resource.js";
 
 export interface Transaction {
   id: string;
@@ -68,6 +69,26 @@ export function useTransactionHistory(
       cancelled = true;
     };
   }, [client, walletId]);
+
+  const refreshFirstPage = useCallback(async () => {
+    if (!walletId) return;
+    setIsLoading(true);
+    setError(null);
+    try {
+      const page = await client.get<TransactionPage>(
+        `/wallet/${walletId}/transactions`,
+      );
+      setTransactions(page.transactions ?? []);
+      cursorRef.current = page.cursor ?? null;
+      hasMoreRef.current = Boolean(page.cursor);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [client, walletId]);
+
+  useRefetchOnFocus(refreshFirstPage, Boolean(walletId));
 
   const fetchMore = useCallback(async () => {
     if (!walletId || !hasMoreRef.current || isLoading) return;

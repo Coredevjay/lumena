@@ -76,6 +76,7 @@ export function LumenThemeProvider({
   style,
   noWrapper = false,
 }: LumenThemeProviderProps) {
+  const rootClass = ["lumen-root", className].filter(Boolean).join(" ");
   const isControlled = controlledMode !== undefined;
   const [internalMode, setInternalMode] = useState<LumenThemeMode>(defaultMode);
   const [systemTheme, setSystemTheme] = useState<LumenResolvedTheme>(() =>
@@ -191,7 +192,7 @@ export function LumenThemeProvider({
   return (
     <div
       data-lumen-theme={resolvedTheme}
-      className={className}
+      className={rootClass}
       style={wrapperStyle}
     >
       {content}

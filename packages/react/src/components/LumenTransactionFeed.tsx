@@ -6,7 +6,7 @@
  * pending transactions pulse and confirmed ones draw a checkmark.
  */
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { describeOperation } from "@lumen/core";
 import { useTransactionHistory, type Transaction } from "../use-transaction-history.js";
 
@@ -145,12 +145,25 @@ export function LumenTransactionFeed({
 }: LumenTransactionFeedProps): React.ReactElement {
   const { transactions, isLoading, error } = useTransactionHistory(walletId);
   const [now, setNow] = useState(() => Date.now());
+  const [feedAnnouncement, setFeedAnnouncement] = useState("");
+  const prevCountRef = useRef(0);
 
-  // Keep relative timestamps fresh.
+  // Keep relative timestamps fresh (does not announce — visual only).
   useEffect(() => {
     const intervalId = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(intervalId);
   }, []);
+
+  useEffect(() => {
+    if (transactions.length !== prevCountRef.current) {
+      prevCountRef.current = transactions.length;
+      if (transactions.length > 0 && !isLoading) {
+        setFeedAnnouncement(
+          `${transactions.length} transaction${transactions.length === 1 ? "" : "s"} in feed`,
+        );
+      }
+    }
+  }, [transactions.length, isLoading]);
 
   const sorted = [...transactions].sort((a, b) => getTimeValue(b) - getTimeValue(a));
 
@@ -200,7 +213,7 @@ export function LumenTransactionFeed({
                 alignItems: "center",
                 gap: "0.75rem",
                 padding: "0.5rem 0.75rem",
-                borderLeft: `3px solid ${STATUS_COLORS[status]}`,
+                borderInlineStart: `3px solid ${STATUS_COLORS[status]}`,
                 borderRadius: "4px",
                 background: "#fafafa",
                 transition: "border-color 0.3s ease",
@@ -246,9 +259,26 @@ export function LumenTransactionFeed({
 
   return (
     <div className={["lumen-tx-feed", className].filter(Boolean).join(" ")}>
-      <div className="lumen-tx-feed__live" aria-live="polite">
-        {renderContent()}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        className="lumen-tx-feed__announcer"
+        style={{
+          position: "absolute",
+          width: 1,
+          height: 1,
+          padding: 0,
+          margin: -1,
+          overflow: "hidden",
+          clip: "rect(0, 0, 0, 0)",
+          whiteSpace: "nowrap",
+          border: 0,
+        }}
+      >
+        {feedAnnouncement}
       </div>
+      <div className="lumen-tx-feed__live">{renderContent()}</div>
       <style>{`
         @keyframes lumen-tx-pulse {
           0%, 100% { opacity: 1; transform: scale(1); }

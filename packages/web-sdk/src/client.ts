@@ -107,20 +107,27 @@ export class LumenClient {
    * Makes an authenticated HTTP request to the configured serverUrl.
    * All headers (including Authorization) are merged from defaultHeaders.
    */
+  private requestDefaults: { timeoutMs?: number; retries?: number } = {};
+
+  configureRequest(options: { timeoutMs?: number; retries?: number }): void {
+    this.requestDefaults = { ...this.requestDefaults, ...options };
+  }
+
   private async request<T>(
     method: string,
     path: string,
     body?: unknown,
+    callOpts: { signal?: AbortSignal; timeoutMs?: number; retries?: number } = {},
   ): Promise<T> {
-    const res = await fetch(`${this.serverUrl}${path}`, {
+    const { fetchWithRetry } = await import("./fetch-with-retry.js");
+    const res = await fetchWithRetry(`${this.serverUrl}${path}`, {
       method,
       headers: this.defaultHeaders,
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      timeoutMs: callOpts.timeoutMs ?? this.requestDefaults.timeoutMs,
+      retries: callOpts.retries ?? this.requestDefaults.retries ?? (method === "GET" ? 2 : 0),
+      signal: callOpts.signal,
     });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`${method} ${path} failed (${res.status}): ${text}`);
-    }
     return res.json() as Promise<T>;
   }
 

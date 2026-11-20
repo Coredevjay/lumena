@@ -3,6 +3,8 @@ import { Horizon, TransactionBuilder } from "@stellar/stellar-sdk";
 import fs from "node:fs";
 import { createInitCommand } from "./commands/init";
 import { createWalletCommand } from "./commands/wallet";
+import { createDoctorCommand } from "./commands/doctor";
+import { createPolicyApplyCommand } from "./commands/policy-apply";
 
 const program = new Command();
 
@@ -84,7 +86,10 @@ registerContractCommand(program, {
   horizonUrls: HORIZON_URLS,
 });
 
+program.addCommand(createDoctorCommand(DEFAULT_SERVER_URL, isJsonOutput));
+
 const policyCmd = program.command("policy").description("Manage wallet policy rules");
+policyCmd.addCommand(createPolicyApplyCommand(DEFAULT_SERVER_URL, isJsonOutput));
 
 policyCmd
   .command("get <walletId>")
@@ -315,6 +320,8 @@ webhookCmd
       process.exit(1);
     }
   });
+
+program.addCommand(createSponsorStatusCommands(DEFAULT_SERVER_URL, isJsonOutput));
 
 const sponsorCmd = program.command("sponsor").description("Inspect the sponsor account");
 
@@ -692,6 +699,21 @@ cosignCmd
       console.log(JSON.stringify(result, null, 2));
     } catch (err: any) {
       console.error("Error submitting transaction for cosigning:", err.message || err);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("audit-verify")
+  .description("Verify an offline audit Merkle manifest against an export log")
+  .requiredOption("--manifest <path>")
+  .requiredOption("--log <path>")
+  .action((options) => {
+    try {
+      verifyAuditLog(options.manifest, options.log);
+      console.log("Audit log verified");
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
     }
   });

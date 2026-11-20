@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useLumen } from "./context.js";
+import { usePolling } from "./use-async-resource.js";
 
 export interface UseBalanceResult {
   balance: string | undefined;
@@ -79,25 +80,16 @@ export function useBalance(
     }
   }, [client, walletId, assetCode, store]);
 
-  useEffect(() => {
-    void refetch();
-
-    if (refreshInterval <= 0) {
-      return;
-    }
-
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const intervalId = window.setInterval(() => {
-      void refetch();
-    }, refreshInterval);
-
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [refetch, refreshInterval]);
+  usePolling({
+    fetcher: async (signal) => {
+      signal;
+      await refetch();
+      return store.getState().balance;
+    },
+    pollInterval: refreshInterval,
+    refetchOnFocus: true,
+    enabled: Boolean(walletId),
+  });
 
   return {
     balance: state.balance,

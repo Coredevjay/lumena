@@ -6,6 +6,7 @@ export {
   resolveNetwork,
   type NetworkConfig,
 } from "./networks.js";
+export { formatAmount, formatAssetCode } from "./format-amount.js";
 export { StellarClient } from "./stellar/client.js";
 export { createSponsoredAccount } from "./stellar/account.js";
 export {

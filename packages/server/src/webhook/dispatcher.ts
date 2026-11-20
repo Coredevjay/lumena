@@ -29,6 +29,43 @@ export const WEBHOOK_RETRY_DELAYS_MS: readonly number[] = [
   6 * 60 * 60_000, // 6 hours
 ];
 
+/**
+ * Header carrying the primary (current) webhook signature.
+ * During a secret rotation overlap window a second header,
+ * {@link WEBHOOK_SIGNATURE_PREVIOUS_HEADER}, carries the signature produced
+ * with the previous secret so receivers can verify with either one.
+ */
+export const WEBHOOK_SIGNATURE_HEADER = "x-lumen-signature";
+export const WEBHOOK_SIGNATURE_PREVIOUS_HEADER = "x-lumen-signature-previous";
+
+/** Default overlap window (ms) during which both secrets sign deliveries. */
+export const WEBHOOK_SECRET_OVERLAP_MS = 24 * 60 * 60_000;
+
+/** Computes the hex HMAC-SHA256 signature of `body` with `secret`. */
+export function signWebhookPayload(secret: string, body: string): string {
+  return createHmac("sha256", secret).update(body).digest("hex");
+}
+
+/**
+ * Verifies a webhook delivery against one or more candidate secrets.
+ * Returns true when any candidate secret matches `signature`.
+ */
+export function verifyWebhookSignature(
+  body: string,
+  signature: string,
+  secrets: readonly string[],
+): boolean {
+  const provided = Buffer.from(signature, "utf8");
+  let valid = false;
+  for (const secret of secrets) {
+    const expected = Buffer.from(signWebhookPayload(secret, body), "utf8");
+    if (expected.length === provided.length && timingSafeEqual(expected, provided)) {
+      valid = true;
+    }
+  }
+  return valid;
+}
+
 export const WEBHOOK_QUEUE_NAME = "lumen-webhook-deliveries";
 export const WEBHOOK_DLQ_NAME = "lumen-webhook-dead-letter";
 

@@ -17,6 +17,19 @@ authors = ["Lumen Contributors"]
 [workspace.dependencies]
 soroban-sdk = "21.0.0"
 
+# Shared lint set inherited by every contract crate via `[lints] workspace = true`.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+arithmetic_side_effects = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+# Soroban charges deployment fees proportional to WASM size, so release
+# builds are tuned for the smallest possible binary.
 [profile.release]
 opt-level = "z"
 overflow-checks = true
@@ -26,4 +39,3 @@ debug-assertions = false
 panic = "abort"
 codegen-units = 1
 lto = true
-</final_file_content>

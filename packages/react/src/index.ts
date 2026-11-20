@@ -30,6 +30,8 @@ export type { CreateWalletResult, UseCreateWalletResult } from "./use-create-wal
 
 export { useBalance } from "./use-balance.js";
 export type { UseBalanceResult } from "./use-balance.js";
+export { useBalanceSuspense, useWalletBalance } from "./use-balance-suspense.js";
+export type { UseBalanceOptions } from "./use-balance-suspense.js";
 
 export { useSendPayment } from "./use-send-payment.js";
 export type {

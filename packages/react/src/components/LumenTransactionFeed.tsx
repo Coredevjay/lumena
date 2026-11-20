@@ -200,7 +200,7 @@ export function LumenTransactionFeed({
                 alignItems: "center",
                 gap: "0.75rem",
                 padding: "0.5rem 0.75rem",
-                borderLeft: `3px solid ${STATUS_COLORS[status]}`,
+                borderInlineStart: `3px solid ${STATUS_COLORS[status]}`,
                 borderRadius: "4px",
                 background: "#fafafa",
                 transition: "border-color 0.3s ease",

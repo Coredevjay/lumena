@@ -72,11 +72,19 @@ pub enum Error {
     SameKey = 12,
 }
 
+/// Semantic version of this contract, kept in sync with `Cargo.toml`.
+pub const CONTRACT_VERSION: u32 = 1;
+
 #[contract]
 pub struct SocialRecoveryContract;
 
 #[contractimpl]
 impl SocialRecoveryContract {
+    /// Returns the contract version.
+    pub fn version(_env: Env) -> u32 {
+        CONTRACT_VERSION
+    }
+
     /// Register (or replace) the guardian configuration for the calling owner.
     ///
     /// The owner must authenticate. `guardians` is the set of N guardian

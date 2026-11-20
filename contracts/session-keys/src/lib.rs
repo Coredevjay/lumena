@@ -27,11 +27,19 @@ pub enum DataKey {
     OwnerIndex(Address),
 }
 
+/// Semantic version of this contract, kept in sync with `Cargo.toml`.
+pub const CONTRACT_VERSION: u32 = 1;
+
 #[contract]
 pub struct SessionKeysContract;
 
 #[contractimpl]
 impl SessionKeysContract {
+    /// Returns the contract version.
+    pub fn version(_env: Env) -> u32 {
+        CONTRACT_VERSION
+    }
+
     /// Register a new session key for `owner`. Requires owner authorization.
     pub fn register_session_key(
         env: Env,

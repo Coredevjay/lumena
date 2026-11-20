@@ -66,8 +66,16 @@ const ED25519_L: [u8; 32] = [
 #[contract]
 pub struct MpcVerifier;
 
+/// Semantic version of this contract, kept in sync with `Cargo.toml`.
+pub const CONTRACT_VERSION: u32 = 1;
+
 #[contractimpl]
 impl MpcVerifier {
+    /// Returns the contract version.
+    pub fn version(_env: Env) -> u32 {
+        CONTRACT_VERSION
+    }
+
     /// Initialize the verifier with an admin, threshold, and scheme.
     pub fn initialize(env: Env, admin: Address, threshold: u32, scheme: u32) {
         if env.storage().instance().has(&DataKey::Admin) {

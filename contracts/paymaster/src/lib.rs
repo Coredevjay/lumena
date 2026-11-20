@@ -25,11 +25,19 @@ pub enum PaymasterError {
     FeeExceedsMax = 5,
 }
 
+/// Semantic version of this contract, kept in sync with `Cargo.toml`.
+pub const CONTRACT_VERSION: u32 = 1;
+
 #[contract]
 pub struct Paymaster;
 
 #[contractimpl]
 impl Paymaster {
+    /// Returns the contract version.
+    pub fn version(_env: Env) -> u32 {
+        CONTRACT_VERSION
+    }
+
     pub fn initialize(env: Env, owner: Address, epoch_length: u32) {
         if env.storage().instance().has(&DataKey::Owner) {
             panic!("already initialized");

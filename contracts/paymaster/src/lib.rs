@@ -18,11 +18,20 @@ pub enum DataKey {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum PaymasterError {
-    InvalidAmount = 1,
-    InsufficientDeposit = 2,
-    SpendLimitExceeded = 3,
-    Unauthorized = 4,
-    FeeExceedsMax = 5,
+    /// The contract has already been initialized.
+    AlreadyInitialized = 1,
+    /// An amount (deposit, withdrawal or fee) was zero or negative.
+    InvalidAmount = 2,
+    /// The sponsor's deposit cannot cover the requested fee.
+    InsufficientDeposit = 3,
+    /// The user's per-epoch spend limit would be exceeded.
+    SpendLimitExceeded = 4,
+    /// The caller is not authorized for this operation.
+    Unauthorized = 5,
+    /// The requested fee exceeds the configured maximum.
+    FeeExceedsMax = 6,
+    /// A spend limit was set to a negative value.
+    InvalidLimit = 7,
 }
 
 #[contract]
@@ -30,15 +39,16 @@ pub struct Paymaster;
 
 #[contractimpl]
 impl Paymaster {
-    pub fn initialize(env: Env, owner: Address, epoch_length: u32) {
+    pub fn initialize(env: Env, owner: Address, epoch_length: u32) -> Result<(), PaymasterError> {
         if env.storage().instance().has(&DataKey::Owner) {
-            panic!("already initialized");
+            return Err(PaymasterError::AlreadyInitialized);
         }
         owner.require_auth();
         env.storage().instance().set(&DataKey::Owner, &owner);
         env.storage()
             .instance()
             .set(&DataKey::EpochLength, &epoch_length);
+        Ok(())
     }
 
     pub fn owner(env: Env) -> Address {
@@ -60,15 +70,21 @@ impl Paymaster {
         env.ledger().sequence() / epoch_length
     }
 
-    pub fn set_spend_limit(env: Env, user: Address, token: Address, limit: i128) {
+    pub fn set_spend_limit(
+        env: Env,
+        user: Address,
+        token: Address,
+        limit: i128,
+    ) -> Result<(), PaymasterError> {
         let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
         owner.require_auth();
         if limit < 0 {
-            panic!("invalid limit");
+            return Err(PaymasterError::InvalidLimit);
         }
         env.storage()
             .persistent()
             .set(&DataKey::SpendLimit(user, token), &limit);
+        Ok(())
     }
 
     pub fn spend_limit(env: Env, user: Address, token: Address) -> i128 {
@@ -93,10 +109,15 @@ impl Paymaster {
             .unwrap_or(0)
     }
 
-    pub fn deposit(env: Env, sponsor: Address, token: Address, amount: i128) -> i128 {
+    pub fn deposit(
+        env: Env,
+        sponsor: Address,
+        token: Address,
+        amount: i128,
+    ) -> Result<i128, PaymasterError> {
         sponsor.require_auth();
         if amount <= 0 {
-            panic!("invalid amount");
+            return Err(PaymasterError::InvalidAmount);
         }
 
         let token_client = token::Client::new(&env, &token);
@@ -107,7 +128,7 @@ impl Paymaster {
         let updated = current + amount;
         env.storage().persistent().set(&key, &updated);
 
-        updated
+        Ok(updated)
     }
 
     pub fn sponsor_invocation(

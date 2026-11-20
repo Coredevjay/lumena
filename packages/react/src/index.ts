@@ -22,6 +22,9 @@ export type {
 
 export { useIsMounted } from "./hooks/use-is-mounted.js";
 
+export { useAsyncResource, usePolling, useRefetchOnFocus } from "./use-async-resource.js";
+export type { UseAsyncResourceOptions, UseAsyncResourceResult } from "./use-async-resource.js";
+
 export { useWallet } from "./use-wallet.js";
 export type { UseWalletResult } from "./use-wallet.js";
 

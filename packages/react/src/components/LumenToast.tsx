@@ -98,6 +98,8 @@ export function LumenToastProvider({
 }: LumenToastProviderProps): React.ReactElement {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const [announcement, setAnnouncement] = useState("");
+  const lastAnnouncedIdRef = useRef<string | null>(null);
 
   const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((toast) => toast.id !== id));
@@ -122,6 +124,12 @@ export function LumenToastProvider({
         const filtered = prev.slice(-maxToasts + 1);
         return [...filtered, newToast];
       });
+
+      if (lastAnnouncedIdRef.current !== id) {
+        lastAnnouncedIdRef.current = id;
+        const live = toast.status === "error" ? "assertive" : "polite";
+        setAnnouncement(`${live}:${toast.message}`);
+      }
 
       // Auto-dismiss if duration > 0
       if (newToast.duration && newToast.duration > 0) {
@@ -199,9 +207,31 @@ export function LumenToastProvider({
     dispatchTransactionEvent,
   };
 
+  const liveMode = announcement.startsWith("assertive:") ? "assertive" : "polite";
+  const liveText = announcement.replace(/^(assertive|polite):/, "");
+
   return (
     <ToastContext.Provider value={contextValue}>
       {children}
+      <div
+        className="lumen-toast-sr-announcer"
+        role={liveMode === "assertive" ? "alert" : "status"}
+        aria-live={liveMode}
+        aria-atomic="true"
+        style={{
+          position: "absolute",
+          width: 1,
+          height: 1,
+          padding: 0,
+          margin: -1,
+          overflow: "hidden",
+          clip: "rect(0, 0, 0, 0)",
+          whiteSpace: "nowrap",
+          border: 0,
+        }}
+      >
+        {liveText}
+      </div>
       <LumenToastContainer toasts={toasts} onRemove={removeToast} position={position} />
     </ToastContext.Provider>
   );
@@ -343,8 +373,8 @@ function LumenToastItem({ toast, onRemove }: LumenToastItemProps): React.ReactEl
         gap: "0.5rem",
         animation: "lumen-toast-slide-in 0.3s ease-out",
       }}
-      role="alert"
-      aria-live="polite"
+      role="presentation"
+      aria-hidden="true"
     >
       {/* Header with icon and close button */}
       <div

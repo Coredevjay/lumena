@@ -1,21 +1,18 @@
 {
-  "name": "handsoff",
+  "name": "lumen",
   "version": "1.0.0",
   "private": true,
   "sideEffects": false,
-  "workspaces": [
-    "packages/*"
-  ],
   "scripts": {
-    "dev": "npm run dev --workspaces --if-present",
-    "build": "tsup && npm run build --workspaces --if-present",
+    "dev": "pnpm -r --parallel run dev",
+    "build": "tsup && pnpm -r run build",
     "build:tsup": "tsup",
     "validate:package": "publint && attw --pack .",
-    "test": "npm run test --workspaces --if-present",
-    "test:fuzz": "npm run test:fuzz --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present",
+    "test": "pnpm -r run test",
+    "test:fuzz": "pnpm -r run test:fuzz",
+    "lint": "pnpm -r run lint",
     "lint:security": "eslint --no-eslintrc --config scripts/linter/eslint.config.js --ext .js,.jsx,.ts,.tsx .",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "pnpm -r run typecheck",
     "contracts:build": "cargo build --manifest-path contracts/Cargo.toml --target wasm32-unknown-unknown --release",
     "contracts:test": "cargo test --manifest-path contracts/Cargo.toml",
     "benchmarks:run": "cargo run --package benchmarks --bin benchmarks",
@@ -26,7 +23,7 @@
     "docs:preview": "astro preview --root docs",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "npm run build && changeset publish",
+    "release": "pnpm run build && changeset publish",
     "commitlint": "commitlint",
     "commitlint:pr": "commitlint --from origin/main --to HEAD",
     "prepare": "husky || true"
@@ -42,5 +39,5 @@
     "publint": "^0.2.11",
     "tsup": "^8.3.0"
   },
-  "packageManager": "pnpm@12.14.0+sha512.c18ba6d87993d3d164cb5e8948f32b2c06ee854487e06cd8d86781342fb3e5bb4634367034711e86802baa9c37bea906ce1929ad08d70884c97d801df13389a6"
+  "packageManager": "pnpm@9.15.4"
 }

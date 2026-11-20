@@ -459,4 +459,108 @@ mod test {
             }
         }
     }
+
+    #[test]
+    fn test_batch_extends_all_tracked_entries() {
+        let (env, client) = setup();
+        let contract_id = client.address.clone();
+
+        // Use distinct symbols so each entry is a separate persistent key.
+        let k0 = Symbol::new(&env, "b0");
+        let k1 = Symbol::new(&env, "b1");
+        let k2 = Symbol::new(&env, "b2");
+        let k3 = Symbol::new(&env, "b3");
+        let k4 = Symbol::new(&env, "b4");
+        let k5 = Symbol::new(&env, "b5");
+        let k6 = Symbol::new(&env, "b6");
+        let k7 = Symbol::new(&env, "b7");
+        let k8 = Symbol::new(&env, "b8");
+        let k9 = Symbol::new(&env, "b9");
+        let all = [k0, k1, k2, k3, k4, k5, k6, k7, k8, k9];
+
+        env.as_contract(&contract_id, || {
+            for key in all.iter() {
+                env.storage().persistent().set(key, &1u32);
+            }
+        });
+        for key in all.iter() {
+            client.track_entry(key);
+        }
+        assert_eq!(client.tracked_count(), 10);
+
+        env.ledger().with_mut(|li| {
+            li.sequence_number += 100;
+        });
+
+        let status = client.extend_ttl_if_needed(&1_000, &10_000);
+        assert_eq!(status.persistent_extended, 10);
+        for key in all.iter() {
+            assert!(client.entry_ttl(key) >= 1_000);
+        }
+    }
+
+    #[test]
+    fn test_missing_tracked_key_is_skipped() {
+        let (env, client) = setup();
+        let contract_id = client.address.clone();
+        let present = Symbol::new(&env, "present");
+        let missing = Symbol::new(&env, "missing");
+
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(&present, &1u32);
+        });
+        client.track_entry(&present);
+        client.track_entry(&missing);
+        assert_eq!(client.tracked_count(), 2);
+
+        env.ledger().with_mut(|li| {
+            li.sequence_number += 100;
+        });
+
+        // The missing entry has no persistent value; it must be skipped
+        // without panicking and without being counted as extended.
+        let status = client.extend_ttl_if_needed(&1_000, &10_000);
+        assert_eq!(status.persistent_extended, 1);
+        assert!(client.entry_ttl(&present) >= 1_000);
+        assert_eq!(client.entry_ttl(&missing), 0);
+    }
+
+    #[test]
+    fn test_estimate_rent_overflow() {
+        assert_eq!(
+            TtlManager::estimate_rent(u32::MAX, u32::MAX),
+            Err(TtlError::Overflow)
+        );
+        assert_eq!(
+            TtlManager::estimate_rent(u32::MAX, 1_000_000),
+            Err(TtlError::Overflow)
+        );
+    }
+
+    #[test]
+    fn test_estimate_rent_zero_entries() {
+        let estimate = TtlManager::estimate_rent(0, 1_000).unwrap();
+        assert_eq!(estimate.estimated_rent, 0);
+        assert_eq!(estimate.entry_count, 0);
+    }
+
+    #[test]
+    fn test_estimate_tracked_rent_overflow() {
+        let (env, client) = setup();
+        let key = Symbol::new(&env, "ovf");
+        client.track_entry(&key);
+        assert_eq!(
+            client.try_estimate_tracked_rent(&u32::MAX),
+            Err(Ok(TtlError::Overflow))
+        );
+    }
+
+    #[test]
+    fn test_reimbursement_balance_unknown_payer_is_zero() {
+        let (env, client) = setup();
+        let payer = Address::generate(&env);
+        assert_eq!(client.reimbursement_balance(&payer), 0);
+        assert_eq!(client.total_deposited(), 0);
+        assert_eq!(client.total_withdrawn(), 0);
+    }
 }

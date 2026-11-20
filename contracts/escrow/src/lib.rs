@@ -423,4 +423,291 @@ mod test {
         let res = client.try_deposit(&depositor, &recipient, &arbiter, &token_addr, &500, &100);
         assert_eq!(res, Err(Ok(Error::InvalidDeadline)));
     }
+
+    // ---------------------------------------------------------------------
+    // Per-function negative tests
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn test_deposit_negative_amount() {
+        let (env, client, depositor, recipient, arbiter, token_addr, _) = setup();
+        let res = client.try_deposit(&depositor, &recipient, &arbiter, &token_addr, &-1, &1000);
+        assert_eq!(res, Err(Ok(Error::InvalidAmount)));
+    }
+
+    #[test]
+    fn test_release_unknown_escrow() {
+        let (env, client, _, recipient, _, _, _) = setup();
+        let res = client.try_release(&42, &recipient);
+        assert_eq!(res, Err(Ok(Error::NotFound)));
+    }
+
+    #[test]
+    fn test_release_twice_fails() {
+        let (env, client, depositor, recipient, arbiter, token_addr, _) = setup();
+        let id = client.deposit(&depositor, &recipient, &arbiter, &token_addr, &500, &1000);
+        client.release(&id, &recipient);
+        let res = client.try_release(&id, &recipient);
+        assert_eq!(res, Err(Ok(Error::InvalidState)));
+    }
+
+    #[test]
+    fn test_release_after_refund_fails() {
+        let (env, client, depositor, recipient, arbiter, token_addr, _) = setup();
+        let id = client.deposit(&depositor, &recipient, &arbiter, &token_addr, &500, &1000);
+        client.refund(&id, &depositor);
+        let res = client.try_release(&id, &recipient);
+        assert_eq!(res, Err(Ok(Error::InvalidState)));
+    }
+
+    #[test]
+    fn test_refund_unknown_escrow() {
+        let (env, client, depositor, _, _, _, _) = setup();
+        let res = client.try_refund(&42, &depositor);
+        assert_eq!(res, Err(Ok(Error::NotFound)));
+    }
+
+    #[test]
+    fn test_refund_twice_fails() {
+        let (env, client, depositor, recipient, arbiter, token_addr, _) = setup();
+        let id = client.deposit(&depositor, &recipient, &arbiter, &token_addr, &500, &1000);
+        client.refund(&id, &depositor);
+        let res = client.try_refund(&id, &depositor);
+        assert_eq!(res, Err(Ok(Error::InvalidState)));
+    }
+
+    #[test]
+    fn test_refund_after_release_fails() {
+        let (env, client, depositor, recipient, arbiter, token_addr, _) = setup();
+        let id = client.deposit(&depositor, &recipient, &arbiter, &token_addr, &500, &1000);
+        client.release(&id, &recipient);
+        let res = client.try_refund(&id, &depositor);
+        assert_eq!(res, Err(Ok(Error::InvalidState)));
+    }
+
+    #[test]
+    fn test_raise_dispute_unknown_escrow() {
+        let (env, client, depositor, _, _, _, _) = setup();
+        let res = client.try_raise_dispute(&42, &depositor);
+        assert_eq!(res, Err(Ok(Error::NotFound)));
+    }
+
+    #[test]
+    fn test_raise_dispute_unauthorized() {
+        let (env, client, depositor, recipient, arbiter, token_addr, _) = setup();
+        let stranger = Address::generate(&env);
+        let id = client.deposit(&depositor, &recipient, &arbiter, &token_addr, &500, &1000);
+        let res = client.try_raise_dispute(&id, &stranger);
+        assert_eq!(res, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn test_raise_dispute_twice_fails() {
+        let (env, client, depositor, recipient, arbiter, token_addr, _) = setup();
+        let id = client.deposit(&depositor, &recipient, &arbiter, &token_addr, &500, &1000);
+        client.raise_dispute(&id, &depositor);
+        let res = client.try_raise_dispute(&id, &recipient);
+        assert_eq!(res, Err(Ok(Error::InvalidState)));
+    }
+
+    #[test]
+    fn test_raise_dispute_after_release_fails() {
+        let (env, client, depositor, recipient, arbiter, token_addr, _) = setup();
+        let id = client.deposit(&depositor, &recipient, &arbiter, &token_addr, &500, &1000);
+        client.release(&id, &recipient);
+        let res = client.try_raise_dispute(&id, &depositor);
+        assert_eq!(res, Err(Ok(Error::InvalidState)));
+    }
+
+    #[test]
+    fn test_arbitrate_unknown_escrow() {
+        let (env, client, _, _, arbiter, _, _) = setup();
+        let res = client.try_arbitrate(&42, &arbiter, &true);
+        assert_eq!(res, Err(Ok(Error::NotFound)));
+    }
+
+    #[test]
+    fn test_arbitrate_non_disputed_fails() {
+        let (env, client, depositor, recipient, arbiter, token_addr, _) = setup();
+        let id = client.deposit(&depositor, &recipient, &arbiter, &token_addr, &500, &1000);
+        let res = client.try_arbitrate(&id, &arbiter, &true);
+        assert_eq!(res, Err(Ok(Error::InvalidState)));
+    }
+
+    #[test]
+    fn test_arbitrate_twice_fails() {
+        let (env, client, depositor, recipient, arbiter, token_addr, _) = setup();
+        let id = client.deposit(&depositor, &recipient, &arbiter, &token_addr, &500, &1000);
+        client.raise_dispute(&id, &depositor);
+        client.arbitrate(&id, &arbiter, &true);
+        let res = client.try_arbitrate(&id, &arbiter, &false);
+        assert_eq!(res, Err(Ok(Error::InvalidState)));
+    }
+
+    #[test]
+    fn test_get_unknown_escrow() {
+        let (env, client, _, _, _, _, _) = setup();
+        let res = client.try_get_escrow(&42);
+        assert_eq!(res, Err(Ok(Error::NotFound)));
+    }
+
+    // ---------------------------------------------------------------------
+    // Randomised sequence test: conservation of funds invariant
+    // ---------------------------------------------------------------------
+
+    /// Deterministic xorshift64* PRNG so failures are reproducible from the
+    /// logged seed without pulling in an external dependency.
+    struct Rng(u64);
+
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            // Avoid the all-zero state, which is a fixed point of xorshift.
+            Rng(if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed })
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+
+        /// Uniform value in `0..bound` (`bound` must be > 0).
+        fn below(&mut self, bound: u64) -> u64 {
+            self.next_u64() % bound
+        }
+    }
+
+    /// Sum of the amounts of every escrow still holding funds in the contract.
+    fn open_escrow_total(env: &Env, client: &EscrowContractClient<'_>, next_id: u64) -> i128 {
+        let mut total: i128 = 0;
+        for id in 0..next_id {
+            let escrow = client.get_escrow(&id);
+            if escrow.state == EscrowState::Deposited || escrow.state == EscrowState::Disputed {
+                total += escrow.amount;
+            }
+        }
+        total
+    }
+
+    fn assert_conservation(
+        env: &Env,
+        client: &EscrowContractClient<'_>,
+        token_addr: &Address,
+        next_id: u64,
+        step: u32,
+        seed: u64,
+    ) {
+        let token_client = token::Client::new(env, token_addr);
+        let contract_balance = token_client.balance(&client.address);
+        let open_total = open_escrow_total(env, client, next_id);
+        assert_eq!(
+            contract_balance, open_total,
+            "conservation of funds violated at step {step} (seed {seed})"
+        );
+    }
+
+    #[test]
+    fn test_randomised_sequence_conserves_funds() {
+        const STEPS: u32 = 200;
+
+        for seed in [1u64, 0xDEAD_BEEF, 0x5EED_1234_5678_9ABC] {
+            let (env, client, depositor, recipient, arbiter, token_addr, token_admin) = setup();
+            let token_client = token::Client::new(&env, &token_addr);
+            let mut rng = Rng::new(seed);
+            let mut next_id: u64 = 0;
+
+            for step in 0..STEPS {
+                // Keep the depositor funded so deposits can succeed.
+                if token_client.balance(&depositor) < 1_000 {
+                    token_admin.mint(&depositor, &10_000);
+                }
+
+                let action = rng.below(5);
+                let id = if next_id == 0 { 0 } else { rng.below(next_id) };
+
+                match action {
+                    0 => {
+                        let amount = 1 + rng.below(500) as i128;
+                        let deadline = env.ledger().timestamp() + 1 + rng.below(1_000);
+                        let new_id = client.deposit(
+                            &depositor,
+                            &recipient,
+                            &arbiter,
+                            &token_addr,
+                            &amount,
+                            &deadline,
+                        );
+                        assert_eq!(new_id, next_id);
+                        next_id += 1;
+                    }
+                    1 => {
+                        if next_id > 0 {
+                            // Recipient or arbiter may release.
+                            let caller = if rng.below(2) == 0 {
+                                recipient.clone()
+                            } else {
+                                arbiter.clone()
+                            };
+                            let _ = client.try_release(&id, &caller);
+                        }
+                    }
+                    2 => {
+                        if next_id > 0 {
+                            // Depositor may always refund; a stranger only
+                            // once the deadline has passed.
+                            let caller = if rng.below(2) == 0 {
+                                depositor.clone()
+                            } else {
+                                Address::generate(&env)
+                            };
+                            let _ = client.try_refund(&id, &caller);
+                        }
+                    }
+                    3 => {
+                        if next_id > 0 {
+                            let caller = if rng.below(2) == 0 {
+                                depositor.clone()
+                            } else {
+                                recipient.clone()
+                            };
+                            let _ = client.try_raise_dispute(&id, &caller);
+                        }
+                    }
+                    _ => {
+                        if next_id > 0 {
+                            let to_recipient = rng.below(2) == 0;
+                            let _ = client.try_arbitrate(&id, &arbiter, &to_recipient);
+                        }
+                    }
+                }
+
+                // Advance the ledger occasionally so deadlines can expire.
+                if rng.below(4) == 0 {
+                    let now = env.ledger().timestamp();
+                    env.ledger().with_mut(|li| li.timestamp = now + 1 + rng.below(200));
+                }
+
+                assert_conservation(&env, &client, &token_addr, next_id, step, seed);
+            }
+
+            // Drain every remaining escrow and re-check the invariant.
+            for id in 0..next_id {
+                let escrow = client.get_escrow(&id);
+                match escrow.state {
+                    EscrowState::Deposited => {
+                        let _ = client.try_refund(&id, &depositor);
+                    }
+                    EscrowState::Disputed => {
+                        let _ = client.try_arbitrate(&id, &arbiter, &true);
+                    }
+                    _ => {}
+                }
+            }
+            assert_conservation(&env, &client, &token_addr, next_id, STEPS, seed);
+            assert_eq!(token_client.balance(&client.address), 0);
+        }
+    }
 }

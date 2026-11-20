@@ -1,6 +1,124 @@
 import pino from 'pino';
+import pinoHttp from 'pino-http';
 
 const isProduction = process.env.NODE_ENV === 'production';
+
+/**
+ * Placeholder substituted for every redacted value.
+ *
+ * Kept as a constant so tests and docs can assert on a single token.
+ */
+export const REDACTED = '[redacted]';
+
+/**
+ * Canonical list of log paths that must never contain raw values.
+ *
+ * Documented in `docs/logging-redaction.md`; keep both in sync.
+ *
+ * - `authorization` / `x-api-key` / `cookie` / `set-cookie`: credentials.
+ * - `body.xdr`, `*.xdr`: base64 Soroban transaction envelopes.
+ * - `secret`, `secretKey`, `seed`, `privateKey`, `mnemonic`, `password`,
+ *   `apiKey`, `token`, `signature`: key material and bearer tokens.
+ * - `address`, `publicKey`, `account`, `sourceAccount`, `contractId`:
+ *   Stellar addresses (G.../C.../M...) are treated as PII.
+ * - `txHash`, `transactionHash`, `hash`: transaction identifiers.
+ * - `err.stack`, `error.stack`, `stack`: internal stack traces.
+ */
+export const REDACT_PATHS: readonly string[] = [
+  // Credentials
+  'authorization',
+  'Authorization',
+  'headers.authorization',
+  'headers.Authorization',
+  'req.headers.authorization',
+  'req.headers.Authorization',
+  'x-api-key',
+  'X-Api-Key',
+  'headers.x-api-key',
+  'headers["x-api-key"]',
+  'req.headers.x-api-key',
+  'req.headers["x-api-key"]',
+  'cookie',
+  'headers.cookie',
+  'req.headers.cookie',
+  'set-cookie',
+  'res.headers["set-cookie"]',
+  // Raw XDR envelopes
+  'xdr',
+  'body.xdr',
+  'req.body.xdr',
+  '*.xdr',
+  '*.body.xdr',
+  // Secret material
+  'secret',
+  'secretKey',
+  'seed',
+  'privateKey',
+  'mnemonic',
+  'password',
+  'apiKey',
+  'token',
+  'signature',
+  '*.secret',
+  '*.secretKey',
+  '*.seed',
+  '*.privateKey',
+  '*.mnemonic',
+  '*.password',
+  '*.apiKey',
+  '*.token',
+  '*.signature',
+  'body.secret',
+  'body.secretKey',
+  'body.seed',
+  'body.privateKey',
+  'body.mnemonic',
+  'body.password',
+  'body.apiKey',
+  'body.token',
+  'body.signature',
+  'req.body.secret',
+  'req.body.secretKey',
+  'req.body.seed',
+  'req.body.privateKey',
+  'req.body.mnemonic',
+  'req.body.password',
+  'req.body.apiKey',
+  'req.body.token',
+  'req.body.signature',
+  // Stellar addresses
+  'address',
+  'publicKey',
+  'account',
+  'sourceAccount',
+  'contractId',
+  '*.address',
+  '*.publicKey',
+  '*.account',
+  '*.sourceAccount',
+  '*.contractId',
+  'body.address',
+  'body.publicKey',
+  'body.account',
+  'body.sourceAccount',
+  'body.contractId',
+  'req.body.address',
+  'req.body.publicKey',
+  'req.body.account',
+  'req.body.sourceAccount',
+  'req.body.contractId',
+  // Transaction identifiers
+  'txHash',
+  'transactionHash',
+  'hash',
+  '*.txHash',
+  '*.transactionHash',
+  '*.hash',
+  // Stack traces
+  'err.stack',
+  'error.stack',
+  'stack',
+];
 
 export const logger = pino({
   level: process.env.LOG_LEVEL || (isProduction ? 'info' : 'debug'),
@@ -8,18 +126,8 @@ export const logger = pino({
   // into logs that may be surfaced to clients. Structured logging keeps
   // internal diagnostics server-side only.
   redact: {
-    paths: [
-      'err.stack',
-      'error.stack',
-      'stack',
-      'txHash',
-      'transactionHash',
-      'hash',
-      '*.txHash',
-      '*.transactionHash',
-      '*.hash',
-    ],
-    remove: true,
+    paths: [...REDACT_PATHS],
+    censor: REDACTED,
   },
   ...(isProduction
     ? {}
@@ -29,6 +137,26 @@ export const logger = pino({
           options: { colorize: true },
         },
       }),
+});
+
+/**
+ * HTTP request logger middleware.
+ *
+ * Shares the redaction configuration of {@link logger} so request headers
+ * (`authorization`, `x-api-key`, cookies) and bodies (`xdr`, secrets,
+ * addresses) are censored before serialization.
+ */
+export const httpLogger = pinoHttp({
+  logger,
+  redact: {
+    paths: [...REDACT_PATHS],
+    censor: REDACTED,
+  },
+  serializers: {
+    req(req: { method?: string; url?: string; headers?: Record<string, unknown> }) {
+      return { method: req.method, url: req.url, headers: req.headers };
+    },
+  },
 });
 
 /** Log levels supported by Pino, used to validate runtime reloads. */

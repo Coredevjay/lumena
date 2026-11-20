@@ -34,6 +34,9 @@ pub enum PaymasterError {
     InvalidLimit = 7,
 }
 
+/// Semantic version of this contract, kept in sync with `Cargo.toml`.
+pub const CONTRACT_VERSION: u32 = 1;
+
 #[contract]
 pub struct Paymaster;
 

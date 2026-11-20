@@ -71,8 +71,16 @@ pub enum Error {
 #[contract]
 pub struct EscrowContract;
 
+/// Semantic version of this contract, kept in sync with `Cargo.toml`.
+pub const CONTRACT_VERSION: u32 = 1;
+
 #[contractimpl]
 impl EscrowContract {
+    /// Returns the contract version.
+    pub fn version(_env: Env) -> u32 {
+        CONTRACT_VERSION
+    }
+
     /// Create a new escrow, transferring `amount` of `token` from `depositor`
     /// into the contract. Returns the escrow id.
     ///

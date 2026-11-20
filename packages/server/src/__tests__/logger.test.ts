@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { logger, httpLogger } from "../logger.js";
+import { Writable } from "node:stream";
+import pino from "pino";
+import { logger, httpLogger, REDACT_PATHS, REDACTED } from "../logger.js";
 
 describe("logger", () => {
   it("initializes pino logger instance", () => {

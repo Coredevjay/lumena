@@ -56,11 +56,19 @@ pub enum TokenError {
     NegativeNotAllowed = 8,
 }
 
+/// Semantic version of this contract, kept in sync with `Cargo.toml`.
+pub const CONTRACT_VERSION: u32 = 1;
+
 #[contract]
 pub struct Sep41Token;
 
 #[contractimpl]
 impl Sep41Token {
+    /// Returns the contract version.
+    pub fn version(_env: Env) -> u32 {
+        CONTRACT_VERSION
+    }
+
     /// Initializes the token with an admin, decimals, name, and symbol.
     pub fn initialize(env: Env, admin: Address, decimals: u32, name: String, symbol: String) {
         if env.storage().instance().has(&DataKey::Admin) {

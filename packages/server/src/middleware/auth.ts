@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { ValidationError } from "../errors.js";
 
 export type Role = "admin" | "operator" | "auditor";
@@ -19,6 +19,12 @@ export interface Tenant {
   monthlyGasQuotaXlm: number;
   monthlyGasUsedXlm: number;
   allowedDomains: string[];
+  /**
+   * Named API keys for this tenant. Only salted hashes are stored; plaintext
+   * keys are never persisted. When present, these take precedence over the
+   * legacy single `apiKeyHash`.
+   */
+  apiKeys?: TenantApiKey[];
   /**
    * Optional per-tenant Stellar network override. When omitted, the network is
    * resolved from the registry (by tenant id / API key hash) or the legacy
@@ -119,6 +125,14 @@ export function resolveNetworkConfig(
 export interface TenantStore {
   findByApiKeyHash(hash: string): Tenant | undefined;
   get(id: string): Tenant | undefined;
+  /**
+   * Resolve a tenant by a presented plaintext API key. Implementations should
+   * verify the key against stored salted hashes and record `lastUsedAt` for the
+   * matching key id.
+   */
+  findByApiKey?(apiKey: string): Tenant | undefined;
+  /** Record a successful use of a named key (updates `lastUsedAt`). */
+  touchApiKey?(tenantId: string, keyId: string, at?: Date): void;
 }
 
 declare global {
@@ -127,6 +141,8 @@ declare global {
     interface Request {
       user?: AuthUser;
       tenant?: Tenant;
+      /** Id of the named API key that authenticated this request, if any. */
+      apiKeyId?: string;
       /** Tenant-scoped network config resolved during authentication. */
       networkConfig?: NetworkConfig;
     }
@@ -148,6 +164,79 @@ export interface AuthMiddlewareOpts {
  */
 export function hashApiKey(apiKey: string): string {
   return createHash("sha256").update(apiKey).digest("hex");
+}
+
+/**
+ * A single named API key belonging to a tenant. Only the salted hash is ever
+ * persisted; the plaintext key is returned once at creation time and never
+ * stored.
+ */
+export interface TenantApiKey {
+  /** Stable key id, safe to log and to reference in audit entries. */
+  id: string;
+  /** Human-readable label, e.g. "ci-deploy" or "mobile-app". */
+  label: string;
+  /** Salted hash of the key material (see {@link hashApiKeyWithSalt}). */
+  keyHash: string;
+  /** Salt used to derive {@link keyHash}. */
+  salt: string;
+  createdAt: string;
+  /** ISO timestamp of the last successful authentication, if any. */
+  lastUsedAt?: string;
+  /** ISO timestamp after which the key is rejected, if set. */
+  expiresAt?: string;
+  /** Soft-revocation flag; revoked keys never authenticate. */
+  revokedAt?: string;
+}
+
+/**
+ * Derive a salted hash for an API key. The salt is stored alongside the hash;
+ * the plaintext key is never persisted.
+ */
+export function hashApiKeyWithSalt(apiKey: string, salt: string): string {
+  return createHash("sha256").update(`${salt}:${apiKey}`).digest("hex");
+}
+
+/**
+ * Generate a new named API key for a tenant. Returns the plaintext key (to be
+ * shown to the caller exactly once) plus the record to persist.
+ */
+export function createTenantApiKey(
+  label: string,
+  opts: { id?: string; now?: Date; expiresAt?: Date } = {},
+): { plaintext: string; record: TenantApiKey } {
+  const now = opts.now ?? new Date();
+  const salt = randomBytes(16).toString("hex");
+  const plaintext = `lmn_${randomBytes(24).toString("base64url")}`;
+  return {
+    plaintext,
+    record: {
+      id: opts.id ?? randomUUID(),
+      label,
+      keyHash: hashApiKeyWithSalt(plaintext, salt),
+      salt,
+      createdAt: now.toISOString(),
+      expiresAt: opts.expiresAt?.toISOString(),
+    },
+  };
+}
+
+/**
+ * Verify a presented plaintext key against a stored key record. Uses a
+ * constant-time comparison and rejects revoked or expired keys.
+ */
+export function verifyTenantApiKey(
+  apiKey: string,
+  record: Pick<TenantApiKey, "keyHash" | "salt" | "expiresAt" | "revokedAt">,
+  now: Date = new Date(),
+): boolean {
+  if (record.revokedAt) {
+    return false;
+  }
+  if (record.expiresAt && new Date(record.expiresAt).getTime() <= now.getTime()) {
+    return false;
+  }
+  return safeEqual(hashApiKeyWithSalt(apiKey, record.salt), record.keyHash);
 }
 
 function extractOriginHost(origin: string | undefined): string | undefined {

@@ -28,6 +28,11 @@ export type { UseWalletResult } from "./use-wallet.js";
 export { useCreateWallet } from "./use-create-wallet.js";
 export type { CreateWalletResult, UseCreateWalletResult } from "./use-create-wallet.js";
 
+export { useDebouncedAddressValidation } from "./use-debounced-address-validation.js";
+export type {
+  DebouncedAddressValidationResult,
+  UseDebouncedAddressValidationOptions,
+} from "./use-debounced-address-validation.js";
 export { useBalance } from "./use-balance.js";
 export type { UseBalanceResult } from "./use-balance.js";
 

@@ -152,6 +152,8 @@ export type { SwapIntent } from "./intent.js";
  * };
  * ```
  */
+export { PolicySchema, PolicyRuleSchema } from "./schemas/policy.js";
+export type { PolicyFromSchema } from "./schemas/policy.js";
 export type { Policy } from "./policy.js";
 
 /**

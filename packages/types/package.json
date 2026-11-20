@@ -24,6 +24,9 @@
     "lint:attw": "attw --pack .",
     "validate": "npm run lint:publint && npm run lint:attw"
   },
+  "dependencies": {
+    "zod": "^3.24.0"
+  },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.17.0",
     "publint": "^0.3.0",

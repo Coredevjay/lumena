@@ -1,4 +1,5 @@
 import React, { type ButtonHTMLAttributes } from "react";
+import { formatAmount } from "@lumen/core";
 import { useBalance } from "../use-balance.js";
 
 export interface LumenBalanceProps {
@@ -78,7 +79,7 @@ export function LumenBalance({
       );
     }
 
-    const displayBalance = balance ?? "—";
+    const displayBalance = balance != null ? formatAmount(balance) : "—";
     const displayAsset = assetCode ?? "XLM";
 
     if (renderBalance) {

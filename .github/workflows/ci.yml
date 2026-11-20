@@ -16,6 +16,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check i18n translation keys
+        run: node scripts/check-i18n-keys.mjs
+
       - name: Require changeset for schema snapshot changes
         if: github.event_name == 'pull_request'
         shell: bash

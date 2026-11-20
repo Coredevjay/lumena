@@ -1,4 +1,5 @@
 export { LumenClient, createSessionKey } from "./client.js";
+export { LumenApiError, LumenTimeoutError } from "./errors.js";
 export { subscribe, LumenWebSocketClient } from "./websocket.js";
 export type { KeypairWalletResult, LumenClientOpts, SessionKeyInfo } from "./client.js";
 

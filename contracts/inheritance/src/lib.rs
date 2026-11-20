@@ -32,8 +32,16 @@ pub enum Error {
 #[contract]
 pub struct InheritanceVault;
 
+/// Semantic version of this contract, kept in sync with `Cargo.toml`.
+pub const CONTRACT_VERSION: u32 = 1;
+
 #[contractimpl]
 impl InheritanceVault {
+    /// Returns the contract version.
+    pub fn version(_env: Env) -> u32 {
+        CONTRACT_VERSION
+    }
+
     /// Initialize the vault with an owner, a beneficiary and a dormancy period (in seconds).
     pub fn initialize(
         env: Env,

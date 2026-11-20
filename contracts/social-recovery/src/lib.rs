@@ -72,11 +72,19 @@ pub enum Error {
     SameKey = 12,
 }
 
+/// Semantic version of this contract, kept in sync with `Cargo.toml`.
+pub const CONTRACT_VERSION: u32 = 1;
+
 #[contract]
 pub struct SocialRecoveryContract;
 
 #[contractimpl]
 impl SocialRecoveryContract {
+    /// Returns the contract version.
+    pub fn version(_env: Env) -> u32 {
+        CONTRACT_VERSION
+    }
+
     /// Register (or replace) the guardian configuration for the calling owner.
     ///
     /// The owner must authenticate. `guardians` is the set of N guardian
@@ -110,9 +118,12 @@ impl SocialRecoveryContract {
             .persistent()
             .set(&DataKey::Config(owner.clone()), &config);
 
-        env.events().publish(
-            (symbol_short!("guardians"), symbol_short!("register")),
-            (owner, config.threshold, config.timelock_seconds),
+        event_schema::publish(
+            &env,
+            Symbol::new(&env, "social_recovery"),
+            Symbol::new(&env, "register"),
+            &owner,
+            (config.threshold, config.timelock_seconds),
         );
         Ok(())
     }
@@ -157,9 +168,12 @@ impl SocialRecoveryContract {
             .persistent()
             .set(&DataKey::Proposal(owner.clone()), &proposal);
 
-        env.events().publish(
-            (symbol_short!("recovery"), symbol_short!("initiate")),
-            (owner, guardian, new_key, proposal.initiated_at),
+        event_schema::publish(
+            &env,
+            Symbol::new(&env, "social_recovery"),
+            Symbol::new(&env, "initiate"),
+            &owner,
+            (guardian, new_key, proposal.initiated_at),
         );
         Ok(())
     }
@@ -192,9 +206,12 @@ impl SocialRecoveryContract {
             .persistent()
             .set(&DataKey::Proposal(owner.clone()), &proposal);
 
-        env.events().publish(
-            (symbol_short!("recovery"), symbol_short!("vote")),
-            (owner, guardian, proposal.votes.len()),
+        event_schema::publish(
+            &env,
+            Symbol::new(&env, "social_recovery"),
+            Symbol::new(&env, "vote"),
+            &owner,
+            (guardian, proposal.votes.len()),
         );
         Ok(())
     }
@@ -231,9 +248,12 @@ impl SocialRecoveryContract {
             .persistent()
             .set(&DataKey::Proposal(owner.clone()), &proposal);
 
-        env.events().publish(
-            (symbol_short!("recovery"), symbol_short!("execute")),
-            (owner, new_key.clone(), now),
+        event_schema::publish(
+            &env,
+            Symbol::new(&env, "social_recovery"),
+            Symbol::new(&env, "execute"),
+            &owner,
+            (new_key.clone(), now),
         );
         Ok(new_key)
     }

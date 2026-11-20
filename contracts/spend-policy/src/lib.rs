@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, Address, Env, Symbol, Vec,
 };
 
 /// Number of seconds in a rolling window (24 hours).
@@ -222,9 +222,12 @@ impl SpendPolicyContract {
             .persistent()
             .set(&DataKey::Spends(asset.clone(), account.clone()), &entries);
 
-        env.events().publish(
-            (symbol_short!("spend"), asset, account),
-            (amount, now),
+        event_schema::publish(
+            &env,
+            Symbol::new(&env, "spend_policy"),
+            Symbol::new(&env, "spend"),
+            &account,
+            (asset, amount, now),
         );
 
         Ok(remaining - amount)

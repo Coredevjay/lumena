@@ -12,6 +12,7 @@ on:
       - 'contracts/social-recovery/**'
       - 'contracts/token-sep41/**'
       - 'packages/core/src/soroban/**'
+      - 'deny.toml'
       - '.github/workflows/contracts.yml'
   pull_request:
     paths:
@@ -21,6 +22,7 @@ on:
       - 'contracts/social-recovery/**'
       - 'contracts/token-sep41/**'
       - 'packages/core/src/soroban/**'
+      - 'deny.toml'
       - '.github/workflows/contracts.yml'
   workflow_dispatch:
 
@@ -30,49 +32,54 @@ env:
   SIZE_BUDGET_BYTES: 65536
 
 jobs:
-  discover-contracts:
-    name: Discover Contract Crates
+  lint-and-audit:
+    name: Lint, Format, Deny & Audit
     runs-on: ubuntu-latest
-    outputs:
-      crates: ${{ steps.discover.outputs.crates }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Discover workspace members
-        id: discover
-        run: |
-          set -euo pipefail
-          # Read the workspace members list from contracts/Cargo.toml so new
-          # crates are picked up automatically without editing this workflow.
-          members=$(python3 - <<'PY'
-          import tomllib
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
 
-          with open("contracts/Cargo.toml", "rb") as fh:
-              workspace = tomllib.load(fh)["workspace"]
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-lint-
+            ${{ runner.os }}-cargo-
 
-          members = []
-          for member in workspace.get("members", []):
-              if any(ch in member for ch in "*?["):
-                  raise SystemExit(f"Glob workspace members are not supported: {member}")
-              members.append(member)
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
-          print(" ".join(members))
-          PY
-          )
-          if [ -z "${members}" ]; then
-            echo "::error::No workspace members found in contracts/Cargo.toml."
-            exit 1
-          fi
-          crates="["
-          sep=""
-          for member in ${members}; do
-            crates="${crates}${sep}\"${member}\""
-            sep=","
-          done
-          crates="${crates}]"
-          echo "Discovered contract crates: ${crates}"
-          echo "crates=${crates}" >> "$GITHUB_OUTPUT"
+      - name: Run clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: Run cargo deny
+        run: cargo deny --all-features check
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Run cargo audit
+        run: cargo audit
 
   build-contracts:
     name: Build, Optimize & Export Contracts

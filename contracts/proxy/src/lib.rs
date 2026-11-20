@@ -437,4 +437,158 @@ mod test {
         assert_eq!(client.get_timelock(), timelock_before);
         assert_eq!(client.get_signers(), signers_before);
     }
+
+    // ---- Timelock boundary tests ----
+
+    #[test]
+    fn test_execute_rejected_one_second_before_unlock() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (client, signers) = setup(&env, 2, 100);
+        client.propose_upgrade(&signers.get(0).unwrap(), &dummy_hash(&env));
+        client.approve_upgrade(&signers.get(1).unwrap());
+        // Unlock timestamp is 1_100; one second earlier must still be rejected.
+        set_time(&env, 1_099);
+        let res = client.try_execute_upgrade();
+        assert_eq!(res, Err(Ok(ProxyError::TimelockNotElapsed)));
+        assert!(client.get_pending_upgrade().is_some());
+    }
+
+    #[test]
+    fn test_execute_allowed_exactly_at_unlock() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (client, signers) = setup(&env, 2, 100);
+        client.propose_upgrade(&signers.get(0).unwrap(), &dummy_hash(&env));
+        client.approve_upgrade(&signers.get(1).unwrap());
+        // Exactly at the unlock timestamp the upgrade is executable.
+        set_time(&env, 1_100);
+        client.execute_upgrade();
+        assert!(client.get_pending_upgrade().is_none());
+    }
+
+    #[test]
+    fn test_zero_timelock_executes_immediately() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (client, signers) = setup(&env, 2, 0);
+        client.propose_upgrade(&signers.get(0).unwrap(), &dummy_hash(&env));
+        assert_eq!(client.get_pending_upgrade().unwrap().unlock_timestamp, 1_000);
+        client.approve_upgrade(&signers.get(1).unwrap());
+        client.execute_upgrade();
+        assert!(client.get_pending_upgrade().is_none());
+    }
+
+    #[test]
+    fn test_timelock_saturates_at_max_timestamp() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, u64::MAX - 10);
+        let (client, signers) = setup(&env, 2, 100);
+        client.propose_upgrade(&signers.get(0).unwrap(), &dummy_hash(&env));
+        assert_eq!(
+            client.get_pending_upgrade().unwrap().unlock_timestamp,
+            u64::MAX
+        );
+        client.approve_upgrade(&signers.get(1).unwrap());
+        set_time(&env, u64::MAX);
+        client.execute_upgrade();
+        assert!(client.get_pending_upgrade().is_none());
+    }
+
+    // ---- Storage-layout compatibility across versions ----
+
+    /// A v2 implementation that reads the same storage keys as v1. It exposes
+    /// the v1 read helpers plus a v2-only view, proving that state written by
+    /// v1 is readable by v2 after the WASM swap.
+    #[contract]
+    pub struct ProxyContractV2;
+
+    #[contractimpl]
+    impl ProxyContractV2 {
+        pub fn get_admin(env: Env) -> Result<Address, ProxyError> {
+            env.storage()
+                .instance()
+                .get(&DataKey::Admin)
+                .ok_or(ProxyError::NotInitialized)
+        }
+
+        pub fn get_threshold(env: Env) -> Result<u32, ProxyError> {
+            env.storage()
+                .instance()
+                .get(&DataKey::Threshold)
+                .ok_or(ProxyError::NotInitialized)
+        }
+
+        pub fn get_timelock(env: Env) -> Result<u64, ProxyError> {
+            env.storage()
+                .instance()
+                .get(&DataKey::Timelock)
+                .ok_or(ProxyError::NotInitialized)
+        }
+
+        pub fn get_signers(env: Env) -> Result<Vec<Address>, ProxyError> {
+            env.storage()
+                .persistent()
+                .get(&DataKey::Signers)
+                .ok_or(ProxyError::NotInitialized)
+        }
+
+        pub fn get_pending_upgrade(env: Env) -> Option<PendingUpgrade> {
+            env.storage().persistent().get(&DataKey::PendingUpgrade)
+        }
+
+        /// v2-only view: number of configured signers.
+        pub fn signer_count(env: Env) -> Result<u32, ProxyError> {
+            let signers: Vec<Address> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Signers)
+                .ok_or(ProxyError::NotInitialized)?;
+            Ok(signers.len())
+        }
+    }
+
+    #[test]
+    fn test_v1_state_readable_by_v2_implementation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (client, signers) = setup(&env, 2, 100);
+
+        let admin_before = client.get_admin();
+        let threshold_before = client.get_threshold();
+        let timelock_before = client.get_timelock();
+        let signers_before = client.get_signers();
+
+        // Simulate the upgrade: the same contract id now runs v2 logic.
+        let contract_id = client.address.clone();
+        let v2 = ProxyContractV2Client::new(&env, &contract_id);
+
+        assert_eq!(v2.get_admin(), admin_before);
+        assert_eq!(v2.get_threshold(), threshold_before);
+        assert_eq!(v2.get_timelock(), timelock_before);
+        assert_eq!(v2.get_signers(), signers_before);
+        assert_eq!(v2.signer_count(), 3);
+        assert!(v2.get_pending_upgrade().is_none());
+    }
+
+    #[test]
+    fn test_v1_pending_upgrade_readable_by_v2_implementation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (client, signers) = setup(&env, 2, 100);
+        client.propose_upgrade(&signers.get(0).unwrap(), &dummy_hash(&env));
+        client.approve_upgrade(&signers.get(1).unwrap());
+
+        let v2 = ProxyContractV2Client::new(&env, &client.address);
+        let pending = v2.get_pending_upgrade().unwrap();
+        assert_eq!(pending.new_wasm_hash, dummy_hash(&env));
+        assert_eq!(pending.unlock_timestamp, 1_100);
+        assert_eq!(pending.approvals.len(), 2);
+    }
 }

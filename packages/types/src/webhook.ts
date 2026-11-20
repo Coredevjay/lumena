@@ -180,11 +180,29 @@ export interface WebhookConfig {
  * ```
  */
 export interface WebhookPayload<T = unknown> {
+  /**
+   * Version of the payload envelope. Consumers should branch on this field
+   * rather than on the presence of individual properties.
+   */
+  schemaVersion: WebhookPayloadSchemaVersion;
   id: string;
   event: WebhookEventType;
   timestamp: string;
   data: T;
 }
+
+/**
+ * Current webhook payload schema version.
+ *
+ * Compatibility policy: a new version is only introduced for breaking changes
+ * to the envelope or to an event's `data` shape. The previous version keeps
+ * being delivered for at least one release, and the version in use is
+ * advertised on every request via the `X-Lumen-Webhook-Version` header.
+ */
+export const WEBHOOK_PAYLOAD_SCHEMA_VERSION = "1" as const;
+
+/** Union of every webhook payload schema version Lumen can emit. */
+export type WebhookPayloadSchemaVersion = typeof WEBHOOK_PAYLOAD_SCHEMA_VERSION;
 
 /**
  * Outcome of a single webhook delivery attempt.
